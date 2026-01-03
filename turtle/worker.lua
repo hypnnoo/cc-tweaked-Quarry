@@ -2,6 +2,8 @@
 
 local protocol = require("protocol")
 local lane_miner = require("lane_miner")
+local inventory = require("inventory")
+local nav = require("navigation")
 
 local modem = peripheral.find("modem")
 if not modem then
@@ -13,6 +15,12 @@ modem.open(CHANNEL)
 
 -- Use computer label as ID, or fallback
 local id = os.getComputerLabel() or ("turtle_" .. os.getComputerID())
+
+-- Record starting GPS position for return-to-surface
+local startX, startY, startZ = gps.locate(5)
+if not startX then
+    print("Warning: GPS not available at startup; return-to-surface will be limited.")
+end
 
 local currentJob = nil
 local status = "idle"
@@ -55,7 +63,7 @@ end
 local function heartbeatLoop()
     while true do
         heartbeat()
-        os.sleep(5)
+        sleep(5)
     end
 end
 
@@ -68,10 +76,15 @@ local function miningLoop()
             status = "idle"
             progress = 0
             requestJob()
-            os.sleep(3)
+            sleep(3)
         else
             status = "mining"
             progress = 0
+
+            if inventory.isFull() then
+                inventory.dumpToChest()
+            end
+
             local ok, err = pcall(function()
                 lane_miner.mineLane(currentJob, function(p)
                     progress = p
@@ -82,13 +95,22 @@ local function miningLoop()
                 status = "error"
                 reportError(err)
                 currentJob = nil
-                os.sleep(5)
+                sleep(5)
             else
+                -- Try return-to-surface if we have a valid start position
+                if startX and startY and startZ then
+                    pcall(function()
+                        nav.returnToSurface(startX, startY, startZ)
+                    end)
+                end
+
+                inventory.dumpToChest()
+
                 status = "finished"
                 progress = 100
                 send(protocol.jobDone(id, currentJob.jobId))
                 currentJob = nil
-                os.sleep(2)
+                sleep(2)
             end
         end
     end

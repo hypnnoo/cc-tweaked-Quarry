@@ -5,22 +5,22 @@ local config = {}
 -- Radio
 config.CHANNEL = 42069
 
--- Quarry definition (top layer), relative to turtles' starting line
--- Imagine turtles are lined up along X, all facing +Z into the quarry.
+-- Quarry definition: 16 x 16 area, 253 blocks down
+-- Turtles are lined up along X, all facing +Z into the quarry.
 config.QUARRY = {
-    width = 32,   -- total width across all lanes
-    depth = 32,   -- how far forward to mine
-    height = 60,  -- how many blocks down (optional, used only by lane miner)
+    width = 16,   -- total width across all lanes (X)
+    depth = 16,   -- how far forward to mine (Z)
+    height = 253, -- how many blocks down to mine (Y)
 }
 
--- Number of lanes / turtles you plan to use
+-- Number of lanes / turtles
 config.LANES = 4
 
--- Simple lane generation: splits width evenly into LANES
+-- Split 16 blocks width into 4 lanes of 4 blocks each
 function config.generateLaneJobs()
     local jobs = {}
-    local laneWidth = math.floor(config.QUARRY.width / config.LANES)
-    local remainder = config.QUARRY.width % config.LANES
+    local laneWidth = math.floor(config.QUARRY.width / config.LANES) -- 4
+    local remainder = config.QUARRY.width % config.LANES              -- 0
 
     local x = 0
     for lane = 1, config.LANES do
@@ -32,8 +32,8 @@ function config.generateLaneJobs()
         table.insert(jobs, {
             jobId = jobId,
             lane = lane,
-            xOffset = x,
-            width = w,
+            xOffset = x,                -- turtle moves xOffset blocks along X to reach its lane
+            width = w,                  -- lane width (4 each)
             depth = config.QUARRY.depth,
             height = config.QUARRY.height,
         })

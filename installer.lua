@@ -1,7 +1,7 @@
 -- installer.lua
 -- One-command installer for the quarry fleet
 
-local base = "https://raw.githubusercontent.com/hypnnoo/cc-tweaked-Quarry/main/"
+local base = " https://raw.githubusercontent.com/hypnnoo/cc-tweaked-Quarry/main/"
 
 local function download(path, dest)
     print("Downloading " .. path .. "...")

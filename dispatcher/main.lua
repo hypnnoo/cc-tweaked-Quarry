@@ -10,6 +10,19 @@ if not modem then
 end
 modem.open(config.CHANNEL)
 
+-- Redirect display to an attached monitor (2x2 advanced monitors create one big monitor)
+local monitor = peripheral.find("monitor")
+if monitor then
+    -- Try to set a smaller text scale so more fits on a 2x2 surface. Use pcall in case it fails.
+    pcall(function() monitor.setTextScale(0.5) end)
+
+    -- Redirect the terminal to the monitor so all term.* calls draw there
+    term.redirect(monitor)
+    -- Clear the monitor and set a comfortable background
+    monitor.setBackgroundColor(colors.black)
+    monitor.clear()
+end
+
 -- State
 local turtles = {}      -- [id] = {status, jobId, progress, fuel, lastSeen}
 local jobsQueue = config.generateLaneJobs()  -- pending jobs
@@ -239,18 +252,20 @@ local function timeoutLoop()
     end
 end
 
--- Input handler (keyboard only for simplicity)
+-- Input handler (keyboard + modem events)
 local function inputLoop()
     while true do
-        local event, p1, p2, p3 = os.pullEvent()
-        if event == "modem_message" then
-            handleMessage(event, p1, p2, p3)
-        elseif event == "char" then
-            if p1 == "r" or p1 == "R" then
+        local ev = {os.pullEvent()}
+        if ev[1] == "modem_message" then
+            -- forward entire event args to handler (event, side, channel, reply, message, distance)
+            handleMessage(table.unpack(ev))
+        elseif ev[1] == "char" then
+            local ch = ev[2]
+            if ch == "r" or ch == "R" then
                 jobsQueue = config.generateLaneJobs()
                 log("Jobs reloaded")
                 redraw()
-            elseif p1 == "c" or p1 == "C" then
+            elseif ch == "c" or ch == "C" then
                 jobsQueue = {}
                 activeJobs = {}
                 log("Cleared jobs (no new assignments)")

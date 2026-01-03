@@ -1,109 +1,141 @@
--- turtle/worker.lua
+-- turtle/lane_miner.lua
+-- Mines a rectangular lane (width x depth) down "height" blocks.
 
-local protocol = require("protocol")
-local lane_miner = require("lane_miner")
+local inventory = require("inventory")
 
-local modem = peripheral.find("modem")
-if not modem then
-    error("No modem attached to turtle")
-end
+local lane_miner = {}
 
-local CHANNEL = protocol.CHANNEL
-modem.open(CHANNEL)
-
--- Use computer label as ID, or fallback
-local id = os.getComputerLabel() or ("turtle_" .. os.getComputerID())
-
-local currentJob = nil
-local status = "idle"
-local progress = 0
-
-local function send(msg)
-    modem.transmit(CHANNEL, CHANNEL, protocol.encode(msg))
-end
-
-local function heartbeat()
-    local fuel = turtle.getFuelLevel()
-    send(protocol.heartbeat(id, status, currentJob and currentJob.jobId or nil, progress, fuel))
-end
-
-local function requestJob()
-    send(protocol.jobRequest(id))
-end
-
-local function announceHello()
-    send(protocol.hello(id))
-end
-
-local function reportError(message)
-    send(protocol.errorMsg(id, message))
-end
-
--- Event handler
-local function handleMessage(_, side, ch, reply, message)
-    if ch ~= CHANNEL then return end
-    local data = protocol.decode(message)
-    if not data or type(data) ~= "table" then return end
-    if data.id and data.id ~= id then return end
-
-    if data.type == "assign_job" then
-        currentJob = data.job
-    end
-end
-
--- Background heartbeat
-local function heartbeatLoop()
-    while true do
-        heartbeat()
-        os.sleep(5)
-    end
-end
-
--- Mining loop
-local function miningLoop()
-    announceHello()
-
-    while true do
-        if not currentJob then
-            status = "idle"
-            progress = 0
-            requestJob()
-            os.sleep(3)
-        else
-            status = "mining"
-            progress = 0
-            local ok, err = pcall(function()
-                lane_miner.mineLane(currentJob, function(p)
-                    progress = p
-                end)
-            end)
-
-            if not ok then
-                status = "error"
-                reportError(err)
-                currentJob = nil
-                os.sleep(5)
-            else
-                status = "finished"
-                progress = 100
-                send(protocol.jobDone(id, currentJob.jobId))
-                currentJob = nil
-                os.sleep(2)
+local function ensureFuel()
+    if turtle.getFuelLevel() == "unlimited" then return true end
+    if turtle.getFuelLevel() < 200 then
+        -- try to refuel from inventory
+        for slot = 1, 16 do
+            turtle.select(slot)
+            if turtle.refuel(0) then
+                turtle.refuel(64)
+                if turtle.getFuelLevel() > 1000 then break end
             end
+        end
+    end
+    return turtle.getFuelLevel() > 0
+end
+
+local function safeForward()
+    while turtle.detect() do
+        turtle.dig()
+        sleep(0.1)
+    end
+    while not turtle.forward() do
+        turtle.dig()
+        sleep(0.1)
+    end
+end
+
+local function safeDown()
+    while turtle.detectDown() do
+        turtle.digDown()
+        sleep(0.1)
+    end
+    while not turtle.down() do
+        turtle.digDown()
+        sleep(0.1)
+    end
+end
+
+local function turn(right)
+    if right then turtle.turnRight() else turtle.turnLeft() end
+end
+
+-- Move forward n blocks, digging as needed
+local function moveForwardN(n)
+    for _ = 1, n do
+        ensureFuel()
+        safeForward()
+        if inventory.isFull() then
+            inventory.dumpToChest()
         end
     end
 end
 
--- Main event loop
-parallel.waitForAny(
-    heartbeatLoop,
-    miningLoop,
-    function()
-        while true do
-            local ev = {os.pullEvent()}
-            if ev[1] == "modem_message" then
-                handleMessage(table.unpack(ev))
+-- Move sideways one block to next row (used inside layer pattern)
+local function moveToNextRow(goingForward)
+    if goingForward then
+        turn(true)
+        ensureFuel()
+        safeForward()
+        turn(true)
+    else
+        turn(false)
+        ensureFuel()
+        safeForward()
+        turn(false)
+    end
+    if inventory.isFull() then
+        inventory.dumpToChest()
+    end
+end
+
+-- Mine one horizontal layer (width x depth)
+local function mineLayer(width, depth, statusCallback, layerIndex, totalLayers)
+    local goingForward = true
+
+    for row = 1, depth do
+        for col = 1, width - 1 do
+            ensureFuel()
+            safeForward()
+            if inventory.isFull() then
+                inventory.dumpToChest()
             end
         end
+
+        if statusCallback and totalLayers and layerIndex then
+            local total = totalLayers * depth
+            local done = (layerIndex - 1) * depth + row
+            local pct = math.floor((done / total) * 100)
+            statusCallback(pct)
+        end
+
+        if row ~= depth then
+            moveToNextRow(goingForward)
+            goingForward = not goingForward
+        end
     end
-)
+end
+
+function lane_miner.mineLane(job, statusCallback)
+    -- job: {jobId, xOffset, width, depth, height}
+
+    local width = job.width
+    local depth = job.depth
+    local height = job.height or 10
+
+    -- 1. Move horizontally to lane start: xOffset blocks along X
+    -- Assumes turtles are lined up along X, facing +Z.
+    for _ = 1, job.xOffset do
+        ensureFuel()
+        safeForward()
+        if inventory.isFull() then
+            inventory.dumpToChest()
+        end
+    end
+
+    -- 2. Mine down layer by layer
+    local layersMined = 0
+    local totalLayers = height
+
+    while layersMined < totalLayers do
+        mineLayer(width, depth, statusCallback, layersMined + 1, totalLayers)
+        layersMined = layersMined + 1
+
+        if layersMined < totalLayers then
+            ensureFuel()
+            safeDown()
+        end
+    end
+
+    if statusCallback then
+        statusCallback(100)
+    end
+end
+
+return lane_miner

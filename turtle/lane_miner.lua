@@ -1,5 +1,6 @@
 -- turtle/lane_miner.lua
 -- Mines a rectangular lane (width x depth) down "height" blocks.
+-- Now respects inventory.DRY_RUN to simulate movement/digs without modifying the world.
 
 local inventory = require("inventory")
 
@@ -21,6 +22,12 @@ local function ensureFuel()
 end
 
 local function safeForward()
+    if inventory.DRY_RUN then
+        print("[DRY_RUN] forward")
+        sleep(0.02)
+        return
+    end
+
     while turtle.detect() do
         turtle.dig()
         sleep(0.1)
@@ -32,6 +39,12 @@ local function safeForward()
 end
 
 local function safeDown()
+    if inventory.DRY_RUN then
+        print("[DRY_RUN] down")
+        sleep(0.02)
+        return
+    end
+
     while turtle.detectDown() do
         turtle.digDown()
         sleep(0.1)
@@ -39,6 +52,20 @@ local function safeDown()
     while not turtle.down() do
         turtle.digDown()
         sleep(0.1)
+    end
+end
+
+local function safeDigDown()
+    if inventory.DRY_RUN then
+        print("[DRY_RUN] digDown")
+        sleep(0.01)
+        return
+    end
+
+    -- repeatedly dig down until there is no block below
+    while turtle.detectDown() do
+        turtle.digDown()
+        sleep(0.05)
     end
 end
 
@@ -80,11 +107,19 @@ local function mineLayer(width, depth, statusCallback, layerIndex, totalLayers)
     local goingForward = true
 
     for row = 1, depth do
-        for col = 1, width - 1 do
+        -- traverse width cells for this row; dig down at each cell
+        for col = 1, width do
             ensureFuel()
-            safeForward()
+            -- dig the block below (the layer we are clearing)
+            safeDigDown()
+
             if inventory.isFull() then
                 inventory.dumpToChest()
+            end
+
+            -- move forward if not at the last column
+            if col < width then
+                safeForward()
             end
         end
 

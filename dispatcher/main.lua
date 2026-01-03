@@ -1,5 +1,6 @@
 -- dispatcher/main.lua
 -- Native term-based GUI dispatcher (static layout)
+-- Added: per-miner stats (uptime, jobs completed) and colored job progress bars
 
 local protocol = require("protocol")
 local config = require("config")
@@ -24,14 +25,14 @@ if monitor then
 end
 
 -- State
-local turtles = {}      -- [id] = {status, jobId, progress, fuel, lastSeen}
+local turtles = {}      -- [id] = {status, jobId, progress, fuel, lastSeen, startedAt, jobsCompleted}
 local jobsQueue = config.generateLaneJobs()  -- pending jobs
 local activeJobs = {}   -- [jobId] = turtleId
 local logLines = {}     -- simple log buffer
 
 -- Layout (static)
 local termW, termH = term.getSize()
-local turtlePanelW = 32
+local turtlePanelW = 48
 local fuelPanelW   = 16
 local logPanelW    = termW - turtlePanelW - fuelPanelW - 3 -- borders
 local headerY      = 1
@@ -44,6 +45,79 @@ local function log(msg)
     table.insert(logLines, line)
     if #logLines > (contentBottom - contentTop + 1) then
         table.remove(logLines, 1)
+    end
+end
+
+-- Helpers
+local function pad(s, len)
+    s = tostring(s or "")
+    if #s >= len then return s:sub(1, len) end
+    return s .. string.rep(" ", len - #s)
+end
+
+local function formatUptime(startEpoch)
+    if not startEpoch then return "-" end
+    local now = os.epoch("local")
+    local ms = now - startEpoch
+    if ms < 0 then ms = 0 end
+    local secs = math.floor(ms / 1000)
+    local h = math.floor(secs / 3600)
+    local m = math.floor((secs % 3600) / 60)
+    local s = secs % 60
+    if h > 0 then
+        return string.format("%dh%02dm%02ds", h, m, s)
+    elseif m > 0 then
+        return string.format("%dm%02ds", m, s)
+    else
+        return string.format("%ds", s)
+    end
+end
+
+local function drawProgressBar(x, y, width, percent)
+    -- Draw a colored progress bar using background colors.
+    local barWidth = math.max(2, width - 2) -- space inside [ ]
+    local filled = math.floor((percent / 100) * barWidth + 0.5)
+    if filled < 0 then filled = 0 end
+    if filled > barWidth then filled = barWidth end
+
+    local col = colors.red
+    if percent >= 75 then
+        col = colors.green
+    elseif percent >= 40 then
+        col = colors.yellow
+    else
+        col = colors.red
+    end
+
+    -- Draw left bracket
+    term.setCursorPos(x, y)
+    term.setBackgroundColor(colors.gray)
+    term.setTextColor(colors.white)
+    term.write("[")
+
+    -- Draw filled portion
+    term.setBackgroundColor(col)
+    for i = 1, filled do
+        term.write(" ")
+    end
+
+    -- Draw empty portion
+    term.setBackgroundColor(colors.gray)
+    for i = 1, (barWidth - filled) do
+        term.write(" ")
+    end
+
+    -- Draw right bracket
+    term.setBackgroundColor(colors.gray)
+    term.write("]")
+
+    -- Reset background and write percentage
+    term.setBackgroundColor(colors.black)
+    term.setTextColor(colors.white)
+    local pctStr = (" %3d%%"):format(percent)
+    if #pctStr + x + barWidth + 2 - 1 <= x + width - 1 then
+        term.setCursorPos(x + barWidth + 3, y)
+        term.write(pctStr)
     end
 end
 
@@ -122,20 +196,41 @@ local function drawTurtlePanel()
     drawBox(x1, y1, x2, y2, "Turtles")
 
     local row = contentTop
+    -- header row in panel
+    term.setCursorPos(x1 + 1, row)
+    term.setTextColor(colors.white)
+    term.setBackgroundColor(colors.gray)
+    term.write(pad("ID", 14) .. pad("STATUS", 12) .. pad("UPTIME", 10) .. pad("FUEL", 6) .. pad("JOBS", 6))
+    row = row + 1
+
     for id, t in pairs(turtles) do
         if row > contentBottom then break end
+
         local status = t.status or "unknown"
-        local line = ("%s | %s"):format(id, status)
+        local uptime = formatUptime(t.startedAt)
+        local fuel = tostring(t.fuel or 0)
+        local jobsDone = tostring(t.jobsCompleted or 0)
+
+        -- Line 1: brief summary
         term.setCursorPos(x1 + 1, row)
         term.setTextColor(colors.white)
         term.setBackgroundColor(colors.gray)
+        local idStr = pad(id, 14)
+        local statusStr = pad(status, 12)
+        local uptimeStr = pad(uptime, 10)
+        local fuelStr = pad(fuel, 6)
+        local jobsStr = pad(jobsDone, 6)
+        local line = idStr .. statusStr .. uptimeStr .. fuelStr .. jobsStr
         term.write(line:sub(1, turtlePanelW - 2))
         row = row + 1
-
         if row > contentBottom then break end
-        local jobStr = ("job:%s %3d%%"):format(t.jobId or "-", t.progress or 0)
-        term.setCursorPos(x1 + 1, row)
-        term.write(jobStr:sub(1, turtlePanelW - 2))
+
+        -- Line 2: colored progress bar and details
+        local barWidth = turtlePanelW - 6
+        local pct = t.progress or 0
+        term.setBackgroundColor(colors.gray)
+        term.setTextColor(colors.white)
+        drawProgressBar(x1 + 2, row, barWidth, pct)
         row = row + 1
     end
 end
@@ -154,7 +249,7 @@ local function drawFuelPanel()
         local label = ("%s: %d"):format(id, fuel)
         term.setCursorPos(x1 + 1, row)
         term.setBackgroundColor(colors.gray)
-        if fuel < 500 then
+        if tonumber(fuel) and fuel < 500 then
             term.setTextColor(colors.red)
         else
             term.setTextColor(colors.green)
@@ -205,6 +300,11 @@ local function handleMessage(_, side, ch, reply, message)
     if not id then return end
 
     turtles[id] = turtles[id] or {}
+    -- set startedAt first time we see this turtle
+    if not turtles[id].startedAt then
+        turtles[id].startedAt = os.epoch("local")
+        turtles[id].jobsCompleted = turtles[id].jobsCompleted or 0
+    end
     turtles[id].lastSeen = os.epoch("local")
 
     if data.type == "hello" then
@@ -227,6 +327,8 @@ local function handleMessage(_, side, ch, reply, message)
         end
         turtles[id].status = "idle"
         turtles[id].jobId = nil
+        turtles[id].progress = 100
+        turtles[id].jobsCompleted = (turtles[id].jobsCompleted or 0) + 1
         turtles[id].progress = 0
         log(("Job %s done by %s"):format(data.jobId, id))
 

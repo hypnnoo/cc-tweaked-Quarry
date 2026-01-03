@@ -1,9 +1,17 @@
 -- turtle/worker.lua
+-- Miner worker that requests jobs from dispatcher.
+-- Toggle DRY_RUN below to simulate mining without damaging the world.
 
 local protocol = require("protocol")
 local lane_miner = require("lane_miner")
 local inventory = require("inventory")
 local nav = require("navigation")
+
+-- DRY RUN: when true, the miner will simulate movement/digs and avoid dropping items.
+-- Toggle to `true` while testing in creative to verify behavior.
+local DRY_RUN = false
+
+inventory.DRY_RUN = DRY_RUN
 
 local modem = peripheral.find("modem")
 if not modem then

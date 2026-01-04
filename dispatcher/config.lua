@@ -1,32 +1,41 @@
+-- dispatcher/config.lua
 local config = {}
 
 config.CHANNEL = 42069
 
--- 16 × 16 × 200
+-- EXACT chunk-sized quarry: 16 (X) × 16 (Z) × 200 (Y depth)
 config.QUARRY = {
-    width  = 16,   -- X size
-    depth  = 16,   -- Z size
-    height = 200,  -- downwards layers
+    width  = 16,   -- X
+    depth  = 16,   -- Z
+    height = 200,  -- layers down
 }
 
--- For now, I’d strongly suggest 1 lane while we nail geometry
+-- Start with 1 lane/turtle while you tune it.
+-- Later you can bump this up and spread turtles.
 config.LANES = 1
 
 function config.generateLaneJobs()
     local jobs = {}
-    local laneWidth = config.QUARRY.width / config.LANES
+    local laneWidth = math.floor(config.QUARRY.width / config.LANES)
+    local remainder = config.QUARRY.width % config.LANES
+
     local x = 0
     for lane = 1, config.LANES do
+        local w = laneWidth
+        if lane == config.LANES then w = w + remainder end
+
         table.insert(jobs, {
-            jobId  = "lane_" .. lane,
-            lane   = lane,
-            xOffset= x,
-            width  = laneWidth,
-            depth  = config.QUARRY.depth,
-            height = config.QUARRY.height,
+            jobId   = "lane_" .. lane,
+            lane    = lane,
+            xOffset = x,                  -- blocks along X from turtle start
+            width   = w,                  -- lane width
+            depth   = config.QUARRY.depth,
+            height  = config.QUARRY.height,
         })
-        x = x + laneWidth
+
+        x = x + w
     end
+
     return jobs
 end
 

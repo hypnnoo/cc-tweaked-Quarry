@@ -1,8 +1,10 @@
 -- turtle/worker.lua
-local protocol = require("protocol")
-local miner    = require("lane_miner")
+-- Miner worker that requests jobs, mines lanes, and reports progress/fuel.
 
-local modem = peripheral.find("modem") or error("No modem")
+local protocol  = require("protocol")
+local lane_miner = require("lane_miner")
+
+local modem = peripheral.find("modem") or error("No modem attached")
 modem.open(protocol.CHANNEL)
 
 local id = os.getComputerLabel() or ("turtle_" .. os.getComputerID())
@@ -41,7 +43,7 @@ local function miningLoop()
             status   = "mining"
             progress = 0
 
-            miner.mine(currentJob, function(p)
+            lane_miner.mine(currentJob, function(p)
                 progress = p
                 send(protocol.heartbeat(
                     id,

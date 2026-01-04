@@ -1,18 +1,20 @@
 -- turtle/navigation.lua
--- Simple GPS-based vertical return helper (if you ever want it)
+-- GPS-based return-to-surface helper (currently not used by miner)
 
 local nav = {}
 
-function nav.returnToSurface(_, targetY, _)
-    local _, y = gps.locate()
-    if not y then return end
+function nav.returnToSurface(targetX, targetY, targetZ)
+    local x, y, z = gps.locate(3)
+    if not x then
+        error("GPS unavailable")
+    end
 
-    while y > targetY do
-        if turtle.detectDown() then turtle.digDown() end
-        turtle.down()
-        _, y = gps.locate()
+    -- Simple "go up until target Y" behavior
+    while y < targetY do
+        if turtle.detectUp() then turtle.digUp() end
+        turtle.up()
+        x, y, z = gps.locate(3)
     end
 end
 
 return nav
-

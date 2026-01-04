@@ -1,8 +1,10 @@
 -- turtle/lane_miner.lua
 -- Mines a rectangular lane width x depth x height.
 -- Features:
+--  - Exact footprint: width (X) by depth (Z) starting from the block IN FRONT of the turtle
+--  - 200+ layers down (height)
 --  - Skip-mines air (only digs blocks that exist)
---  - Batch unload when inventory is near-full
+--  - Batch unload when inventory is near-full (using inventory.dumpToChest)
 --  - Skips already completed layers on resume via progress files
 --  - When low on fuel, tries inventory then tries sucking from chest behind
 --  - Will NOT mine other turtles; stops instead of crashing through
@@ -12,12 +14,16 @@ local lane_miner = {}
 
 local NEAR_FULL_EMPTY_SLOTS = 2  -- dump when <= this many empty slots
 
--- Detect turtle blocks from inspect() data
+----------------------------------------------------------------
+-- Turtle detection helpers
+----------------------------------------------------------------
 local function isTurtleBlock(data)
     return data and data.name and data.name:lower():find("turtle") ~= nil
 end
 
--- progress persistence per job
+----------------------------------------------------------------
+-- Progress persistence per job
+----------------------------------------------------------------
 local function progressFile(jobId)
     return "lane_progress_" .. tostring(jobId or "default") .. ".dat"
 end
@@ -42,7 +48,9 @@ local function loadProgress(jobId)
     return n
 end
 
--- Try fuel from inventory only (lava buckets first, then anything)
+----------------------------------------------------------------
+-- Fuel handling
+----------------------------------------------------------------
 local function tryRefuelFromInventory()
     local lvl = turtle.getFuelLevel()
     if lvl == "unlimited" or lvl > 500 then return true end
@@ -78,7 +86,6 @@ local function tryRefuelFromInventory()
     return turtle.getFuelLevel() > 0
 end
 
--- Try to suck fuel from chest behind the turtle (lava bucket)
 local function tryRefuelFromChestBehind()
     turtle.turnLeft()
     turtle.turnLeft()
@@ -94,7 +101,6 @@ local function tryRefuelFromChestBehind()
     return tryRefuelFromInventory()
 end
 
--- Ensure we have enough fuel, using inventory then chest behind
 local function ensureFuel()
     local lvl = turtle.getFuelLevel()
     if lvl == "unlimited" or lvl > 500 then return true end
@@ -103,6 +109,9 @@ local function ensureFuel()
     return tryRefuelFromChestBehind()
 end
 
+----------------------------------------------------------------
+-- Digging helpers (turtle-safe)
+----------------------------------------------------------------
 local function digForward()
     local ok, data = turtle.inspect()
     if ok then
@@ -142,9 +151,9 @@ local function digDown()
     end
 end
 
--- Safe move forward:
---  - if a turtle is in front, returns false and does NOT dig/move
---  - otherwise digs blocks (but not turtles) and moves
+----------------------------------------------------------------
+-- Safe movement (stops if a turtle is in the way)
+----------------------------------------------------------------
 local function safeForward()
     ensureFuel()
 
@@ -173,8 +182,6 @@ local function safeForward()
     end
 end
 
--- Safe move down:
---  - if a turtle is below, returns false and does NOT dig/move
 local function safeDown()
     ensureFuel()
 
@@ -202,7 +209,9 @@ local function safeDown()
     end
 end
 
--- Mine just this cell and batch-unload if near-full
+----------------------------------------------------------------
+-- Mining a single cell
+----------------------------------------------------------------
 local function mineCell()
     digDown()
     if inventory.isFull(NEAR_FULL_EMPTY_SLOTS) then
@@ -210,8 +219,12 @@ local function mineCell()
     end
 end
 
+----------------------------------------------------------------
 -- One horizontal layer: EXACT width (X) × depth (Z)
--- If a turtle blocks movement, we abort the rest of this layer
+-- Assumes:
+--  - We start at the FRONT row of this layer
+--  - Facing +Z into the quarry
+----------------------------------------------------------------
 local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, jobId)
     local goingPositiveX = true  -- true = +X, false = -X
 
@@ -222,7 +235,7 @@ local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, 
                 mineCell()
                 if col < width then
                     if not safeForward() then
-                        turtle.turnLeft() -- face back +Z
+                        turtle.turnLeft() -- restore facing +Z
                         return
                     end
                 end
@@ -234,7 +247,7 @@ local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, 
                 mineCell()
                 if col < width then
                     if not safeForward() then
-                        turtle.turnRight() -- face back +Z
+                        turtle.turnRight() -- restore facing +Z
                         return
                     end
                 end
@@ -242,6 +255,7 @@ local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, 
             turtle.turnRight()  -- -X -> +Z
         end
 
+        -- Progress update
         if statusCallback and totalLayers and layerIndex then
             local totalRows = totalLayers * depth
             local doneRows  = (layerIndex - 1) * depth + row
@@ -249,6 +263,7 @@ local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, 
             statusCallback(pct)
         end
 
+        -- Move to next row along +Z (within this layer)
         if row < depth then
             if not safeForward() then
                 return
@@ -258,14 +273,20 @@ local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, 
     end
 end
 
--- MAIN entry: miner.mine(job, callback)
+----------------------------------------------------------------
+-- MAIN entry: lane_miner.mine(job, statusCallback)
+-- NOTE: We now step FORWARD ONCE into the quarry before mining,
+--       so depth=16 really means "16 blocks in front of the turtle".
+----------------------------------------------------------------
 function lane_miner.mine(job, statusCallback)
     local width  = job.width
     local depth  = job.depth
     local height = job.height or 10
     local jobId  = job.jobId
 
-    -- move sideways along +X to lane start, then face +Z
+    ----------------------------------------------------------------
+    -- 1) Move sideways to lane start (if using xOffset), then face +Z
+    ----------------------------------------------------------------
     if job.xOffset and job.xOffset > 0 then
         turtle.turnRight()  -- +Z -> +X
         for _ = 1, job.xOffset do
@@ -277,7 +298,18 @@ function lane_miner.mine(job, statusCallback)
         turtle.turnLeft()   -- +X -> +Z
     end
 
-    -- Load last completed layer and skip down to it (vertical only)
+    ----------------------------------------------------------------
+    -- 2) Step one block forward into the quarry
+    --    This makes depth=16 mean "16 blocks forward from the block
+    --    in front of the turtle", not counting the line it's sitting on.
+    ----------------------------------------------------------------
+    if not safeForward() then
+        return
+    end
+
+    ----------------------------------------------------------------
+    -- 3) Load last completed layer and skip down to it (vertical only)
+    ----------------------------------------------------------------
     local startLayer = loadProgress(jobId)
     if startLayer > 1 then
         for _ = 1, startLayer - 1 do
@@ -287,6 +319,9 @@ function lane_miner.mine(job, statusCallback)
         end
     end
 
+    ----------------------------------------------------------------
+    -- 4) Mine layers
+    ----------------------------------------------------------------
     local totalLayers = height
 
     for layer = startLayer, totalLayers do

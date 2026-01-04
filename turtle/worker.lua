@@ -1,7 +1,7 @@
 -- turtle/worker.lua
--- Miner worker that requests jobs, mines lanes, and reports progress/fuel.
+-- Miner worker that requests jobs, mines lanes, and reports progress/fuel/GPS.
 
-local protocol  = require("protocol")
+local protocol   = require("protocol")
 local lane_miner = require("lane_miner")
 
 local modem = peripheral.find("modem") or error("No modem attached")
@@ -13,24 +13,38 @@ local currentJob = nil
 local status     = "idle"
 local progress   = 0
 
+local lastX, lastY, lastZ = nil, nil, nil
+
+local function updateGPS()
+    local x, y, z = gps.locate(2)
+    if x then
+        lastX, lastY, lastZ = x, y, z
+    end
+end
+
 local function send(msg)
     modem.transmit(protocol.CHANNEL, protocol.CHANNEL, protocol.encode(msg))
 end
 
 local function heartbeatLoop()
     while true do
+        updateGPS()
         send(protocol.heartbeat(
             id,
             status,
             currentJob and currentJob.jobId or nil,
             progress,
-            turtle.getFuelLevel()
+            turtle.getFuelLevel(),
+            lastX,
+            lastY,
+            lastZ
         ))
         sleep(5)
     end
 end
 
 local function miningLoop()
+    -- initial hello
     send(protocol.hello(id))
 
     while true do
@@ -45,12 +59,16 @@ local function miningLoop()
 
             lane_miner.mine(currentJob, function(p)
                 progress = p
+                updateGPS()
                 send(protocol.heartbeat(
                     id,
                     status,
                     currentJob.jobId,
                     progress,
-                    turtle.getFuelLevel()
+                    turtle.getFuelLevel(),
+                    lastX,
+                    lastY,
+                    lastZ
                 ))
             end)
 

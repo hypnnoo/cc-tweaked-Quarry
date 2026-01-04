@@ -10,7 +10,7 @@ config.CHANNEL = 42069
 config.QUARRY = {
     width = 16,   -- total width across all lanes (X)
     depth = 16,   -- how far forward to mine (Z)
-    height = 253, -- how many blocks down to mine (Y)
+    height = 210, -- how many blocks down to mine (Y)
 }
 
 -- Number of lanes / turtles

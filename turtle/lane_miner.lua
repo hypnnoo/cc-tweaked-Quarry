@@ -2,7 +2,6 @@ local inventory = require("inventory")
 
 local lane_miner = {}
 
--- Refuel using lava buckets if fuel is low
 local function ensureFuel()
     local level = turtle.getFuelLevel()
     if level == "unlimited" or level > 500 then return end
@@ -11,7 +10,7 @@ local function ensureFuel()
         turtle.select(slot)
         local detail = turtle.getItemDetail()
         if detail and detail.name == "minecraft:lava_bucket" then
-            turtle.refuel(1) -- consumes lava, leaves empty bucket
+            turtle.refuel(1) -- consume lava, keep empty bucket
             return
         end
     end
@@ -23,25 +22,25 @@ local function digAround()
     if turtle.detectDown() then turtle.digDown() end
 end
 
-local function forward()
+local function safeForward()
     ensureFuel()
-    digAround()
-    while not turtle.forward() do
+    while true do
         digAround()
+        if turtle.forward() then break end
         sleep(0.1)
     end
 end
 
-local function down()
+local function safeDown()
     ensureFuel()
-    digAround()
-    while not turtle.down() do
+    while true do
         digAround()
+        if turtle.down() then break end
         sleep(0.1)
     end
 end
 
-local function mineCurrentCell()
+local function mineCell()
     digAround()
     if inventory.isFull() then
         return false
@@ -49,71 +48,71 @@ local function mineCurrentCell()
     return true
 end
 
-function lane_miner.mineLane(job, statusCallback)
-    local width  = job.width   -- X size of this lane
+-- MUST be called as miner.mine(job, callback) from worker.lua
+function lane_miner.mine(job, statusCallback)
+    local width  = job.width   -- X size
     local depth  = job.depth   -- Z size
     local height = job.height or 10
 
-    -- 1) Move sideways along X to the start of this lane
-    -- Start assumption: turtle is facing +Z
-    turtle.turnRight() -- now facing +X
+    -- Start assumption:
+    --  - Turtle is on the top-left corner of the area
+    --  - Facing into the quarry (+Z)
+    --  - xOffset is how far to move RIGHT (along X) before starting
+    --
+    -- Move sideways along X to lane start
+    turtle.turnRight()     -- +Z -> +X
     for i = 1, job.xOffset do
-        forward()
+        safeForward()
     end
-    -- stay facing +X here for serpentine
-    local dir = 1 -- +X to start
+    turtle.turnLeft()      -- back to +Z
 
     local totalCells = width * depth * height
     local minedCells = 0
 
-    for layer = 1, height do
-        for row = 1, depth do
-            -- mine starting cell of this row
-            if not mineCurrentCell() then
-                if statusCallback then
-                    statusCallback(math.floor((minedCells / totalCells) * 100))
-                end
-                return "FULL"
-            end
-            minedCells = minedCells + 1
+    -- Serpentine pattern, column-by-column:
+    -- X = 1..width (columns), Z = 1..depth (rows within each column)
+    -- We always mine exactly width * depth cells per layer.
+    local forwardPositiveZ = true  -- true = +Z, false = -Z
 
-            -- traverse rest of row along X (width-1 moves)
-            for step = 1, width - 1 do
-                forward() -- along current X direction
-                if not mineCurrentCell() then
-                    if statusCallback then
+    for layer = 1, height do
+        for col = 1, width do
+            -- each column: depth cells along Z
+            for row = 1, depth do
+                if not mineCell() then
+                    if statusCallback and totalCells > 0 then
                         statusCallback(math.floor((minedCells / totalCells) * 100))
                     end
                     return "FULL"
                 end
-                minedCells = minedCells + 1
-            end
 
-            -- move to next row along Z (if any), flip X direction
-            if row < depth then
-                if dir == 1 then
-                    -- currently facing +X, go +Z, end facing -X
-                    turtle.turnLeft()
-                    forward()  -- +Z
-                    turtle.turnLeft()
-                    dir = -1
-                else
-                    -- currently facing -X, go +Z, end facing +X
-                    turtle.turnRight()
-                    forward()  -- +Z
-                    turtle.turnRight()
-                    dir = 1
+                minedCells = minedCells + 1
+
+                if row < depth then
+                    safeForward()   -- move along current Z direction
                 end
             end
 
-            if statusCallback then
-                statusCallback(math.floor((minedCells / totalCells) * 100))
+            -- Move to next column (X) if any
+            if col < width then
+                if forwardPositiveZ then
+                    -- we ended at far side (+Z), want to step +X and go back -Z
+                    turtle.turnRight()   -- +Z -> +X
+                    safeForward()        -- +X, move to next column
+                    turtle.turnRight()   -- +X -> -Z
+                    forwardPositiveZ = false
+                else
+                    -- we ended at near side (-Z), want to step +X and go back +Z
+                    turtle.turnLeft()    -- -Z -> +X
+                    safeForward()        -- +X
+                    turtle.turnLeft()    -- +X -> +Z
+                    forwardPositiveZ = true
+                end
             end
         end
 
-        -- go down one layer
+        -- Move down one layer
         if layer < height then
-            down()
+            safeDown()
         end
     end
 

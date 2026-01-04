@@ -1,118 +1,161 @@
+-- turtle/lane_miner.lua
+-- Mines a rectangular lane (width x depth) down "height" blocks.
+-- Uses serpentine pattern; guaranteed no extra 16-block stretch.
+
 local inventory = require("inventory")
 
 local lane_miner = {}
 
 local function ensureFuel()
     local level = turtle.getFuelLevel()
-    if level == "unlimited" or level > 500 then return end
+    if level == "unlimited" or level > 500 then return true end
 
+    -- Try lava buckets first, then any other fuel
     for slot = 1, 16 do
         turtle.select(slot)
         local detail = turtle.getItemDetail()
         if detail and detail.name == "minecraft:lava_bucket" then
             turtle.refuel(1) -- consume lava, keep empty bucket
-            return
+            level = turtle.getFuelLevel()
+            if level > 500 then return true end
+        elseif turtle.refuel(0) then
+            turtle.refuel(64)
+            level = turtle.getFuelLevel()
+            if level > 500 then return true end
         end
     end
-end
 
-local function digAround()
-    if turtle.detect() then turtle.dig() end
-    if turtle.detectUp() then turtle.digUp() end
-    if turtle.detectDown() then turtle.digDown() end
+    return turtle.getFuelLevel() > 0
 end
 
 local function safeForward()
     ensureFuel()
-    while true do
-        digAround()
-        if turtle.forward() then break end
+
+    while turtle.detect() do
+        turtle.dig()
+        sleep(0.1)
+    end
+    while not turtle.forward() do
+        turtle.dig()
         sleep(0.1)
     end
 end
 
 local function safeDown()
     ensureFuel()
-    while true do
-        digAround()
-        if turtle.down() then break end
+
+    while turtle.detectDown() do
+        turtle.digDown()
+        sleep(0.1)
+    end
+    while not turtle.down() do
+        turtle.digDown()
         sleep(0.1)
     end
 end
 
-local function mineCell()
-    digAround()
-    if inventory.isFull() then
-        return false
+local function safeDigDown()
+    -- clear the block below, but do not move
+    while turtle.detectDown() do
+        turtle.digDown()
+        sleep(0.05)
     end
-    return true
 end
 
--- MUST be called as miner.mine(job, callback) from worker.lua
-function lane_miner.mine(job, statusCallback)
-    local width  = job.width   -- X size
-    local depth  = job.depth   -- Z size
-    local height = job.height or 10
-
-    -- Start assumption:
-    --  - Turtle is on the top-left corner of the area
-    --  - Facing into the quarry (+Z)
-    --  - xOffset is how far to move RIGHT (along X) before starting
-    --
-    -- Move sideways along X to lane start
-    turtle.turnRight()     -- +Z -> +X
-    for i = 1, job.xOffset do
-        safeForward()
+local function turn(right)
+    if right then
+        turtle.turnRight()
+    else
+        turtle.turnLeft()
     end
-    turtle.turnLeft()      -- back to +Z
+end
 
-    local totalCells = width * depth * height
-    local minedCells = 0
+-- Move sideways one block to next row (used inside layer pattern)
+local function moveToNextRow(goingForward)
+    -- We are facing along the row direction.
+    -- This will move us exactly 1 block sideways and flip our facing.
+    if goingForward then
+        -- turn right, forward, turn right
+        turn(true)
+        safeForward()
+        turn(true)
+    else
+        -- turn left, forward, turn left
+        turn(false)
+        safeForward()
+        turn(false)
+    end
+end
 
-    -- Serpentine pattern, column-by-column:
-    -- X = 1..width (columns), Z = 1..depth (rows within each column)
-    -- We always mine exactly width * depth cells per layer.
-    local forwardPositiveZ = true  -- true = +Z, false = -Z
+-- Mine one horizontal layer (width x depth), no vertical movement.
+-- This stays within EXACTLY width × depth blocks.
+local function mineLayer(width, depth, statusCallback, layerIndex, totalLayers)
+    local goingForward = true
 
-    for layer = 1, height do
+    for row = 1, depth do
+        -- traverse width cells for this row; dig down at each cell
         for col = 1, width do
-            -- each column: depth cells along Z
-            for row = 1, depth do
-                if not mineCell() then
-                    if statusCallback and totalCells > 0 then
-                        statusCallback(math.floor((minedCells / totalCells) * 100))
-                    end
-                    return "FULL"
-                end
+            ensureFuel()
+            safeDigDown()  -- clear the block below this cell
 
-                minedCells = minedCells + 1
-
-                if row < depth then
-                    safeForward()   -- move along current Z direction
-                end
+            if inventory.isFull() then
+                inventory.dumpToChest()
             end
 
-            -- Move to next column (X) if any
+            -- move forward if not at the last column in this row
             if col < width then
-                if forwardPositiveZ then
-                    -- we ended at far side (+Z), want to step +X and go back -Z
-                    turtle.turnRight()   -- +Z -> +X
-                    safeForward()        -- +X, move to next column
-                    turtle.turnRight()   -- +X -> -Z
-                    forwardPositiveZ = false
-                else
-                    -- we ended at near side (-Z), want to step +X and go back +Z
-                    turtle.turnLeft()    -- -Z -> +X
-                    safeForward()        -- +X
-                    turtle.turnLeft()    -- +X -> +Z
-                    forwardPositiveZ = true
-                end
+                safeForward()
             end
         end
 
-        -- Move down one layer
-        if layer < height then
-            safeDown()
+        -- Progress callback per row
+        if statusCallback and totalLayers and layerIndex then
+            local totalRows = totalLayers * depth
+            local doneRows  = (layerIndex - 1) * depth + row
+            local pct       = math.floor((doneRows / totalRows) * 100)
+            statusCallback(pct)
+        end
+
+        -- Move sideways to the next row (if there is one),
+        -- flipping direction, but NOT extending the quarry.
+        if row < depth then
+            moveToNextRow(goingForward)
+            goingForward = not goingForward
+        end
+    end
+end
+
+-- Public entry: called as miner.mine(job, callback) from worker.lua
+-- job: { jobId, xOffset, width, depth, height }
+function lane_miner.mine(job, statusCallback)
+    local width  = job.width
+    local depth  = job.depth
+    local height = job.height or 10
+
+    -- 1. Move horizontally to lane start: xOffset blocks along X.
+    -- Assumes turtles are lined up along X, facing +Z into the quarry.
+    -- We step sideways in +X, then face back to +Z.
+    if job.xOffset and job.xOffset > 0 then
+        turtle.turnRight()  -- +Z -> +X
+        for _ = 1, job.xOffset do
+            safeForward()
+            if inventory.isFull() then
+                inventory.dumpToChest()
+            end
+        end
+        turtle.turnLeft()   -- +X -> +Z
+    end
+
+    -- 2. Mine down layer by layer. Each layer is EXACTLY width × depth.
+    local layersMined = 0
+    local totalLayers = height
+
+    while layersMined < totalLayers do
+        mineLayer(width, depth, statusCallback, layersMined + 1, totalLayers)
+        layersMined = layersMined + 1
+
+        if layersMined < totalLayers then
+            safeDown()  -- go down exactly 1, do NOT move forward/back
         end
     end
 
@@ -122,3 +165,4 @@ function lane_miner.mine(job, statusCallback)
 end
 
 return lane_miner
+

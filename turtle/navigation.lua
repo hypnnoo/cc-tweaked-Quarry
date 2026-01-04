@@ -1,12 +1,13 @@
-local nav = {}
+local n={}
 
-function nav.returnToSurface(_,y,_)
-    local _,cy = gps.locate()
-    while cy > y do
+function n.returnToSurface(_,y,_)
+    local _,cy=gps.locate()
+    while cy>y do
         if turtle.detectDown() then turtle.digDown() end
         turtle.down()
-        _,cy = gps.locate()
+        _,cy=gps.locate()
     end
 end
 
-return nav
+return n
+

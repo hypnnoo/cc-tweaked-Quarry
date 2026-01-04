@@ -1,5 +1,10 @@
 -- dispatcher/main.lua
--- Native term-based GUI on an attached monitor with progress bars
+-- Compact UI for a small 3x4 monitor wall
+-- Features:
+--  - Shows up to 2 turtles per page
+--  - Progress bar + fuel bar
+--  - Low fuel warning
+--  - Tap monitor to change page / toggle pause
 
 local protocol = require("protocol")
 local config   = require("config")
@@ -8,26 +13,41 @@ local modem = peripheral.find("modem") or error("No modem attached")
 modem.open(config.CHANNEL)
 
 local monitor = peripheral.find("monitor")
-if monitor then
-    term.redirect(monitor)
-    pcall(function() monitor.setTextScale(0.5) end)
-end
+if not monitor then error("No monitor connected") end
 
-local W, H = term.getSize()
-local BTN_Y = H - 1
+-- Small but readable text scale for a tiny wall
+pcall(function() monitor.setTextScale(1.5) end)
+term.redirect(monitor)
 
+local W, H = term.getSize()  -- should be small, like ~24x9
 local turtles = {}           -- id -> {status,fuel,progress,jobId,lastSeen}
 local jobs    = config.generateLaneJobs()
 local paused  = false
+local page    = 1
+local perPage = 2            -- 2 turtles per page
+
+------------------------------------------------------------
+-- Helpers
+------------------------------------------------------------
 
 local function send(msg)
     modem.transmit(config.CHANNEL, config.CHANNEL, protocol.encode(msg))
+end
+
+local function sortedIds()
+    local ids = {}
+    for id in pairs(turtles) do
+        table.insert(ids, id)
+    end
+    table.sort(ids)
+    return ids
 end
 
 local function drawBar(x, y, width, percent, color)
     percent = math.max(0, math.min(100, percent or 0))
     local filled = math.floor((percent / 100) * width + 0.5)
 
+    -- background
     term.setCursorPos(x, y)
     term.setBackgroundColor(colors.gray)
     term.write(string.rep(" ", width))
@@ -41,81 +61,90 @@ local function drawBar(x, y, width, percent, color)
     term.setBackgroundColor(colors.black)
 end
 
-local function drawButtons()
-    term.setBackgroundColor(colors.black)
-    term.setCursorPos(1, BTN_Y)
-    term.clearLine()
-
-    term.setCursorPos(2, BTN_Y)
-    term.setTextColor(colors.green)
-    term.write("[ Reload ]")
-
-    term.setCursorPos(14, BTN_Y)
-    term.setTextColor(colors.red)
-    term.write("[ Clear ]")
-
-    term.setCursorPos(26, BTN_Y)
-    term.setTextColor(paused and colors.red or colors.green)
-    term.write(paused and "[ Resume ]" or "[ Pause ]")
-end
-
 local function draw()
     term.setBackgroundColor(colors.black)
     term.clear()
 
-    term.setCursorPos(2, 1)
+    --------------------------------------------------
+    -- HEADER
+    --------------------------------------------------
+    term.setCursorPos(1, 1)
     term.setTextColor(colors.yellow)
-    term.write("Quarry Dispatcher")
+    local title = paused and "Quarry [PAUSE]" or "Quarry"
+    term.write(title)
 
-    local row = 3
-    for id, t in pairs(turtles) do
-        if row + 1 >= BTN_Y then break end
+    --------------------------------------------------
+    -- BODY: 2 turtles max per page
+    --------------------------------------------------
+    local ids = sortedIds()
+    local totalPages = math.max(1, math.ceil(#ids / perPage))
+    if page > totalPages then page = totalPages end
+    if page < 1 then page = 1 end
 
-        term.setCursorPos(2, row)
+    local startIndex = (page - 1) * perPage + 1
+    local y = 2
+
+    for i = startIndex, math.min(startIndex + perPage - 1, #ids) do
+        local id = ids[i]
+        local t  = turtles[id]
+
+        local p = tonumber(t.progress or 0) or 0
+        local f = tonumber(t.fuel or 0) or 0
+        local fuelPct = math.min(100, math.floor((f / 100000) * 100))
+
+        -- Name + low fuel indicator
+        term.setCursorPos(1, y)
         term.setTextColor(colors.white)
-        term.write(string.format(
-            "%-14s %-10s Fuel:%6d",
-            id,
-            tostring(t.status or "?"),
-            tonumber(t.fuel or 0) or 0
-        ))
+        term.clearLine()
+        local label = string.sub(id, 1, W - 6)
+        term.write(label)
 
-        local progress = tonumber(t.progress or 0) or 0
-        local fuel     = tonumber(t.fuel or 0) or 0
+        if fuelPct < 20 then
+            term.setTextColor(colors.red)
+            term.write(" LOW")
+        end
 
-        local fuelPct = math.min(100, math.floor((fuel / 100000) * 100))
+        y = y + 1
 
-        drawBar(2, row + 1, 24, progress,
-            (progress >= 100 and colors.green) or colors.lime)
+        -- Progress + fuel bars on same line (split screen)
+        local barWidth = math.floor(W / 2) - 1
+        local fuelX    = W - barWidth + 1
 
-        term.setCursorPos(28, row + 1)
-        term.setTextColor(colors.white)
-        term.write("P:" .. string.format("%3d%%", progress))
+        -- Progress bar (left)
+        drawBar(1, y, barWidth, p,
+            (p >= 100 and colors.green) or colors.lime)
 
-        drawBar(36, row + 1, 12, fuelPct,
-            (fuelPct < 20 and colors.red) or (fuelPct < 50 and colors.yellow) or colors.green)
+        -- Fuel bar (right)
+        local fuelColor =
+            (fuelPct < 20 and colors.red) or
+            (fuelPct < 50 and colors.orange) or
+            colors.green
 
-        term.setCursorPos(49, row + 1)
-        term.write("F:" .. string.format("%3d%%", fuelPct))
+        drawBar(fuelX, y, barWidth, fuelPct, fuelColor)
 
-        row = row + 3
+        y = y + 1
+        if y >= H then break end
     end
 
-    drawButtons()
-end
+    --------------------------------------------------
+    -- FOOTER / TOUCH CONTROLS
+    --------------------------------------------------
+    term.setCursorPos(1, H)
+    term.setTextColor(colors.cyan)
+    term.setBackgroundColor(colors.black)
+    term.clearLine()
 
-local function click(x, y)
-    if y ~= BTN_Y then return end
-
-    if x >= 2 and x <= 10 then
-        jobs = config.generateLaneJobs()
-    elseif x >= 14 and x <= 22 then
-        jobs = {}
-    elseif x >= 26 and x <= 35 then
-        paused = not paused
+    -- Footer legend:
+    -- Left 1/3:  Prev page
+    -- Mid  1/3:  Pause/Resume
+    -- Right1/3:  Next page
+    local footer = string.format("< Pg %d/%d > ", page, totalPages)
+    if paused then
+        footer = footer .. "P:PAU"
+    else
+        footer = footer .. "P:RUN"
     end
-
-    draw()
+    term.write(string.sub(footer, 1, W))
 end
 
 local function assign(id)
@@ -124,18 +153,33 @@ local function assign(id)
     send(protocol.jobAssign(id, job))
 end
 
-draw()
+------------------------------------------------------------
+-- Touch: left/mid/right to prev/pause-next
+------------------------------------------------------------
+local function handleTouch(_, _, x, _)
+    local third = math.floor(W / 3)
 
-while true do
-    local e = { os.pullEvent() }
-    local ev = e[1]
+    if x <= third then
+        -- prev page
+        page = page - 1
+    elseif x <= third * 2 then
+        -- toggle pause (only affects job assignment)
+        paused = not paused
+        -- Note: turtles will finish current jobs; no auto-return yet
+    else
+        -- next page
+        page = page + 1
+    end
 
-    if ev == "monitor_touch" then
-        local _, _, x, y = table.unpack(e)
-        click(x, y)
+    draw()
+end
 
-    elseif ev == "modem_message" then
-        local _, _, ch, _, msg = table.unpack(e)
+------------------------------------------------------------
+-- Modem loop: updates turtle info and assigns jobs
+------------------------------------------------------------
+local function modemLoop()
+    while true do
+        local _, _, ch, _, msg = os.pullEvent("modem_message")
         if ch ~= config.CHANNEL then goto continue end
 
         local d = protocol.decode(msg)
@@ -165,6 +209,20 @@ while true do
         end
 
         draw()
+
         ::continue::
     end
 end
+
+------------------------------------------------------------
+-- Main
+------------------------------------------------------------
+draw()
+parallel.waitForAny(
+    modemLoop,
+    function()
+        while true do
+            handleTouch(os.pullEvent("monitor_touch"))
+        end
+    end
+)

@@ -1,5 +1,5 @@
 -- dispatcher/main.lua
--- Monitor UI with per-turtle progress bar and fuel bar + clickable buttons
+-- Native term-based GUI on an attached monitor with progress bars
 
 local protocol = require("protocol")
 local config   = require("config")
@@ -24,16 +24,16 @@ local function send(msg)
     modem.transmit(config.CHANNEL, config.CHANNEL, protocol.encode(msg))
 end
 
-local function drawBar(x,y,width,percent,color)
+local function drawBar(x, y, width, percent, color)
     percent = math.max(0, math.min(100, percent or 0))
     local filled = math.floor((percent / 100) * width + 0.5)
 
-    term.setCursorPos(x,y)
+    term.setCursorPos(x, y)
     term.setBackgroundColor(colors.gray)
     term.write(string.rep(" ", width))
 
     if filled > 0 then
-        term.setCursorPos(x,y)
+        term.setCursorPos(x, y)
         term.setBackgroundColor(color)
         term.write(string.rep(" ", filled))
     end
@@ -63,41 +63,39 @@ local function draw()
     term.setBackgroundColor(colors.black)
     term.clear()
 
-    term.setCursorPos(2,1)
+    term.setCursorPos(2, 1)
     term.setTextColor(colors.yellow)
     term.write("Quarry Dispatcher")
 
     local row = 3
-    for id,t in pairs(turtles) do
+    for id, t in pairs(turtles) do
         if row + 1 >= BTN_Y then break end
 
-        -- Line 1: ID + status + numeric fuel
-        term.setCursorPos(2,row)
+        term.setCursorPos(2, row)
         term.setTextColor(colors.white)
         term.write(string.format(
-            "%-12s %-10s Fuel:%5d",
+            "%-14s %-10s Fuel:%6d",
             id,
             tostring(t.status or "?"),
             tonumber(t.fuel or 0) or 0
         ))
 
-        -- Line 2: progress bar + fuel bar
         local progress = tonumber(t.progress or 0) or 0
         local fuel     = tonumber(t.fuel or 0) or 0
 
-        -- fuel pct: assume 0..100000, clamp
         local fuelPct = math.min(100, math.floor((fuel / 100000) * 100))
 
-        -- progress bar (24 wide), fuel bar (12 wide)
-        drawBar(2, row+1, 24, progress, (progress >= 100 and colors.green or colors.lime))
+        drawBar(2, row + 1, 24, progress,
+            (progress >= 100 and colors.green) or colors.lime)
 
-        term.setCursorPos(28, row+1)
+        term.setCursorPos(28, row + 1)
         term.setTextColor(colors.white)
         term.write("P:" .. string.format("%3d%%", progress))
 
-        drawBar(36, row+1, 12, fuelPct,
+        drawBar(36, row + 1, 12, fuelPct,
             (fuelPct < 20 and colors.red) or (fuelPct < 50 and colors.yellow) or colors.green)
-        term.setCursorPos(49, row+1)
+
+        term.setCursorPos(49, row + 1)
         term.write("F:" .. string.format("%3d%%", fuelPct))
 
         row = row + 3
@@ -106,7 +104,7 @@ local function draw()
     drawButtons()
 end
 
-local function click(x,y)
+local function click(x, y)
     if y ~= BTN_Y then return end
 
     if x >= 2 and x <= 10 then
@@ -126,16 +124,18 @@ local function assign(id)
     send(protocol.jobAssign(id, job))
 end
 
+draw()
+
 while true do
-    local e = {os.pullEvent()}
+    local e = { os.pullEvent() }
     local ev = e[1]
 
     if ev == "monitor_touch" then
-        local _,_,x,y = table.unpack(e)
-        click(x,y)
+        local _, _, x, y = table.unpack(e)
+        click(x, y)
 
     elseif ev == "modem_message" then
-        local _,_,ch,_,msg = table.unpack(e)
+        local _, _, ch, _, msg = table.unpack(e)
         if ch ~= config.CHANNEL then goto continue end
 
         local d = protocol.decode(msg)
@@ -150,8 +150,8 @@ while true do
         elseif d.type == "heartbeat" then
             t.status   = d.status or t.status
             t.jobId    = d.jobId or t.jobId
-            t.progress = d.progress or 0
-            t.fuel     = d.fuel or 0
+            t.progress = d.progress or t.progress or 0
+            t.fuel     = d.fuel or t.fuel or 0
             t.lastSeen = os.epoch("local")
 
         elseif d.type == "request_job" then

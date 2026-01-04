@@ -1,8 +1,10 @@
 -- turtle/lane_miner.lua
--- Simplified lane miner:
---  - Skip-mines air (only digs when there's a block)
+-- Mines a rectangular lane width x depth x height.
+-- Features:
+--  - Skip-mines air (only digs blocks that exist)
 --  - Batch unload when inventory is near-full
---  - Skips already completed layers on resume using progress file
+--  - Skips already completed layers on resume via progress files
+--  - When low on fuel, tries inventory then tries sucking from chest behind
 
 local inventory = require("inventory")
 local lane_miner = {}
@@ -34,8 +36,8 @@ local function loadProgress(jobId)
     return n
 end
 
--- Fuel: prefer lava buckets, then anything else
-local function ensureFuel()
+-- Try fuel from inventory only (lava buckets first, then anything)
+local function tryRefuelFromInventory()
     local lvl = turtle.getFuelLevel()
     if lvl == "unlimited" or lvl > 500 then return true end
 
@@ -46,7 +48,10 @@ local function ensureFuel()
         if d and d.name == "minecraft:lava_bucket" then
             turtle.refuel(1)
             lvl = turtle.getFuelLevel()
-            if lvl > 500 then return true end
+            if lvl > 500 then
+                turtle.select(1)
+                return true
+            end
         end
     end
 
@@ -56,11 +61,40 @@ local function ensureFuel()
         if turtle.refuel(0) then
             turtle.refuel(64)
             lvl = turtle.getFuelLevel()
-            if lvl > 500 then return true end
+            if lvl > 500 then
+                turtle.select(1)
+                return true
+            end
         end
     end
 
+    turtle.select(1)
     return turtle.getFuelLevel() > 0
+end
+
+-- Try to suck fuel from chest behind the turtle (lava bucket)
+local function tryRefuelFromChestBehind()
+    turtle.turnLeft()
+    turtle.turnLeft()
+
+    for _ = 1, 4 do
+        turtle.suck(1)
+        sleep(0.1)
+    end
+
+    turtle.turnLeft()
+    turtle.turnLeft()
+
+    return tryRefuelFromInventory()
+end
+
+-- Ensure we have enough fuel, using inventory then chest behind
+local function ensureFuel()
+    local lvl = turtle.getFuelLevel()
+    if lvl == "unlimited" or lvl > 500 then return true end
+
+    if tryRefuelFromInventory() then return true end
+    return tryRefuelFromChestBehind()
 end
 
 local function digForward()
@@ -78,7 +112,6 @@ local function digUp()
 end
 
 local function digDown()
-    -- skip-mining: only dig while something is actually there
     while turtle.detectDown() do
         turtle.digDown()
         sleep(0.05)
@@ -107,7 +140,6 @@ end
 -- Mine just this cell and batch-unload if near-full
 local function mineCell()
     digDown()
-
     if inventory.isFull(NEAR_FULL_EMPTY_SLOTS) then
         inventory.dumpToChest()
     end
@@ -115,8 +147,7 @@ end
 
 -- One horizontal layer: EXACT width (X) × depth (Z)
 local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, jobId)
-    -- Assume facing +Z at lane start
-    local goingPositiveX = true
+    local goingPositiveX = true  -- true = +X, false = -X
 
     for row = 1, depth do
         if goingPositiveX then
@@ -139,7 +170,6 @@ local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, 
             turtle.turnRight()  -- -X -> +Z
         end
 
-        -- progress
         if statusCallback and totalLayers and layerIndex then
             local totalRows = totalLayers * depth
             local doneRows  = (layerIndex - 1) * depth + row

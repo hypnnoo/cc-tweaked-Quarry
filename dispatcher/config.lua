@@ -1,30 +1,33 @@
-local c = {}
+local config = {}
 
-c.CHANNEL = 42069
+config.CHANNEL = 42069
 
-c.QUARRY = {
-    width = 16,
-    depth = 16,
-    height = 200
+-- 16 × 16 × 200
+config.QUARRY = {
+    width  = 16,   -- X size
+    depth  = 16,   -- Z size
+    height = 200,  -- downwards layers
 }
 
-c.LANES = 4
+-- For now, I’d strongly suggest 1 lane while we nail geometry
+config.LANES = 1
 
-function c.generateLaneJobs()
+function config.generateLaneJobs()
     local jobs = {}
-    local w = c.QUARRY.width / c.LANES
+    local laneWidth = config.QUARRY.width / config.LANES
     local x = 0
-    for i=1,c.LANES do
-        table.insert(jobs,{
-            jobId="lane_"..i,
-            xOffset=x,
-            width=w,
-            depth=c.QUARRY.depth,
-            height=c.QUARRY.height
+    for lane = 1, config.LANES do
+        table.insert(jobs, {
+            jobId  = "lane_" .. lane,
+            lane   = lane,
+            xOffset= x,
+            width  = laneWidth,
+            depth  = config.QUARRY.depth,
+            height = config.QUARRY.height,
         })
-        x = x + w
+        x = x + laneWidth
     end
     return jobs
 end
 
-return c
+return config

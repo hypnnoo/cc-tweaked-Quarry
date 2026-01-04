@@ -1,67 +1,43 @@
 -- installer.lua
--- One-command installer for the quarry fleet
 
-local base = " https://raw.githubusercontent.com/hypnnoo/cc-tweaked-Quarry/main/"
+local base = "https://raw.githubusercontent.com/hypnnoo/cc-tweaked-Quarry/main/"
 
 local function download(path, dest)
-    print("Downloading " .. path .. "...")
-    local url = base .. path
-    local ok = shell.run("wget", url, dest)
-    if not ok then
-        print("Failed to download " .. path)
+    print("Downloading " .. path)
+    if not shell.run("wget", base .. path, dest) then
+        error("Failed to download " .. path)
     end
 end
 
 local function ensureDir(dir)
-    if not fs.exists(dir) then
-        fs.makeDir(dir)
-    end
+    if not fs.exists(dir) then fs.makeDir(dir) end
 end
 
-print("Install type:")
 print("1) Dispatcher")
 print("2) Miner Turtle")
 print("3) Refueler Turtle")
 write("> ")
-local choice = read()
+local c = read()
 
-if choice == "1" then
-    print("Installing dispatcher...")
-
-    ensureDir("shared")
+if c == "1" then
     ensureDir("dispatcher")
-
     download("shared/protocol.lua", "protocol.lua")
     download("dispatcher/main.lua", "main.lua")
     download("dispatcher/config.lua", "config.lua")
+    print("Run: main")
 
-    print("Dispatcher install complete.")
-    print("Run with: main")
-
-elseif choice == "2" then
-    print("Installing miner turtle...")
-
-    ensureDir("shared")
+elseif c == "2" then
     ensureDir("turtle")
-
     download("shared/protocol.lua", "protocol.lua")
     download("turtle/worker.lua", "worker.lua")
     download("turtle/lane_miner.lua", "lane_miner.lua")
     download("turtle/inventory.lua", "inventory.lua")
     download("turtle/navigation.lua", "navigation.lua")
+    print("Run: worker")
 
-    print("Miner turtle install complete.")
-    print("Run with: worker")
-
-elseif choice == "3" then
-    print("Installing refueler turtle...")
-
+elseif c == "3" then
     ensureDir("turtle")
     download("turtle/refueler.lua", "refueler.lua")
-
-    print("Refueler install complete.")
-    print("Run with: refueler")
-
-else
-    print("Invalid choice.")
+    print("Run: refueler")
 end
+

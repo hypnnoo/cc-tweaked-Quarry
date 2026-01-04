@@ -1,31 +1,30 @@
-local config = {}
+local c = {}
 
-config.CHANNEL = 42069
+c.CHANNEL = 42069
 
-config.QUARRY = {
+c.QUARRY = {
     width = 16,
     depth = 16,
-    height = 200 -- SAFE FOR ATM10
+    height = 120
 }
 
-config.LANES = 4
+c.LANES = 4
 
-function config.generateLaneJobs()
+function c.generateLaneJobs()
     local jobs = {}
-    local laneWidth = config.QUARRY.width / config.LANES
+    local w = c.QUARRY.width / c.LANES
     local x = 0
-
-    for i = 1, config.LANES do
+    for i=1,c.LANES do
         table.insert(jobs,{
             jobId="lane_"..i,
             xOffset=x,
-            width=laneWidth,
-            depth=config.QUARRY.depth,
-            height=config.QUARRY.height
+            width=w,
+            depth=c.QUARRY.depth,
+            height=c.QUARRY.height
         })
-        x = x + laneWidth
+        x = x + w
     end
     return jobs
 end
 
-return config
+return c

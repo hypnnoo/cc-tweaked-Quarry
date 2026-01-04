@@ -13,9 +13,8 @@ config.QUARRY = {
     height = 200,  -- how many blocks down to mine (Y)
 }
 
--- Number of lanes / turtles
--- Start with 1; if you add more turtles, set LANES=2,4,etc.
-config.LANES = 1
+-- Number of lanes / turtles (set to 2–4 depending on how many miners you run)
+config.LANES = 4
 
 -- Generate lane jobs splitting width evenly across lanes
 function config.generateLaneJobs()
@@ -38,8 +37,8 @@ function config.generateLaneJobs()
         table.insert(jobs, {
             jobId   = jobId,
             lane    = lane,
-            xOffset = x,                 -- turtle moves xOffset blocks along X to reach its lane
-            width   = w,                 -- lane width
+            xOffset = x,                  -- turtle moves xOffset blocks along X to reach its lane
+            width   = w,                  -- lane width
             depth   = config.QUARRY.depth,
             height  = config.QUARRY.height,
         })

@@ -44,7 +44,8 @@ function protocol.jobDone(id, jobId)
     }
 end
 
-function protocol.heartbeat(id, status, jobId, progress, fuel)
+-- heartbeat can optionally carry x,y,z GPS coordinates
+function protocol.heartbeat(id, status, jobId, progress, fuel, x, y, z)
     return {
         type     = "heartbeat",
         id       = id,
@@ -52,6 +53,9 @@ function protocol.heartbeat(id, status, jobId, progress, fuel)
         jobId    = jobId,
         progress = progress,
         fuel     = fuel,
+        x        = x,
+        y        = y,
+        z        = z,
         time     = os.epoch("local"),
     }
 end

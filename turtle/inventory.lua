@@ -1,7 +1,11 @@
 -- turtle/inventory.lua
+-- Improved inventory helper:
+--  - isFull(thresholdEmpty)
+--  - dumpToChest() behind the turtle
+--  - keeps empty buckets
+
 local inv = {}
 
--- items we NEVER dump (keep)
 local keep = {
     ["minecraft:bucket"] = true
 }
@@ -20,7 +24,6 @@ end
 
 -- Dump items into chest BEHIND the turtle
 function inv.dumpToChest()
-    -- face chest behind
     turtle.turnLeft()
     turtle.turnLeft()
 
@@ -32,7 +35,6 @@ function inv.dumpToChest()
         end
     end
 
-    -- face quarry again
     turtle.turnLeft()
     turtle.turnLeft()
     turtle.select(1)

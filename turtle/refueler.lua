@@ -33,12 +33,22 @@ local facing              = nil  -- "north","south","east","west"
 -- MOVEMENT HELPERS (GPS-aware)
 ----------------------------------------------------------------
 
+local function isTurtleBlock(data)
+    return data and data.name and data.name:lower():find("turtle") ~= nil
+end
+
 local function safeDig()
+    local ok, data = turtle.inspect()
+    if ok and isTurtleBlock(data) then
+        -- Another turtle in front; don't dig it
+        return
+    end
     if turtle.detect() then
         turtle.dig()
         sleep(0.05)
     end
 end
+
 
 local function safeForward()
     while not turtle.forward() do

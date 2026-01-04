@@ -5,7 +5,7 @@ c.CHANNEL = 42069
 c.QUARRY = {
     width = 16,
     depth = 16,
-    height = 120
+    height = 200
 }
 
 c.LANES = 4

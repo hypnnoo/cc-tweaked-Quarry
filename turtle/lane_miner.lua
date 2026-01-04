@@ -5,11 +5,17 @@
 --  - Batch unload when inventory is near-full
 --  - Skips already completed layers on resume via progress files
 --  - When low on fuel, tries inventory then tries sucking from chest behind
+--  - Will NOT mine other turtles; stops instead of crashing through
 
 local inventory = require("inventory")
 local lane_miner = {}
 
 local NEAR_FULL_EMPTY_SLOTS = 2  -- dump when <= this many empty slots
+
+-- Detect turtle blocks from inspect() data
+local function isTurtleBlock(data)
+    return data and data.name and data.name:lower():find("turtle") ~= nil
+end
 
 -- progress persistence per job
 local function progressFile(jobId)
@@ -98,41 +104,100 @@ local function ensureFuel()
 end
 
 local function digForward()
-    if turtle.detect() then
+    local ok, data = turtle.inspect()
+    if ok then
+        if isTurtleBlock(data) then
+            -- Another turtle ahead: DO NOT dig it.
+            return
+        end
         turtle.dig()
         sleep(0.05)
     end
 end
 
 local function digUp()
-    if turtle.detectUp() then
+    local ok, data = turtle.inspectUp()
+    if ok then
+        if isTurtleBlock(data) then
+            return
+        end
         turtle.digUp()
         sleep(0.05)
     end
 end
 
 local function digDown()
-    while turtle.detectDown() do
+    while true do
+        local ok, data = turtle.inspectDown()
+        if not ok then break end
+        if isTurtleBlock(data) then
+            -- Turtle below us; don't mine it
+            break
+        end
+        if not turtle.detectDown() then
+            break
+        end
         turtle.digDown()
         sleep(0.05)
     end
 end
 
+-- Safe move forward:
+--  - if a turtle is in front, returns false and does NOT dig/move
+--  - otherwise digs blocks (but not turtles) and moves
 local function safeForward()
     ensureFuel()
-    digForward()
-    digUp()
-    while not turtle.forward() do
+
+    local tries = 0
+    while true do
+        local ok, data = turtle.inspect()
+        if ok and isTurtleBlock(data) then
+            print("Turtle ahead, stopping to avoid collision.")
+            return false
+        end
+
         digForward()
+        digUp()
+
+        if turtle.forward() then
+            return true
+        end
+
+        tries = tries + 1
+        if tries > 50 then
+            print("Blocked, giving up on forward move.")
+            return false
+        end
+
         sleep(0.05)
     end
 end
 
+-- Safe move down:
+--  - if a turtle is below, returns false and does NOT dig/move
 local function safeDown()
     ensureFuel()
-    digDown()
-    while not turtle.down() do
+
+    local tries = 0
+    while true do
+        local ok, data = turtle.inspectDown()
+        if ok and isTurtleBlock(data) then
+            print("Turtle below, stopping to avoid collision.")
+            return false
+        end
+
         digDown()
+
+        if turtle.down() then
+            return true
+        end
+
+        tries = tries + 1
+        if tries > 50 then
+            print("Blocked, giving up on down move.")
+            return false
+        end
+
         sleep(0.05)
     end
 end
@@ -146,6 +211,7 @@ local function mineCell()
 end
 
 -- One horizontal layer: EXACT width (X) × depth (Z)
+-- If a turtle blocks movement, we abort the rest of this layer
 local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, jobId)
     local goingPositiveX = true  -- true = +X, false = -X
 
@@ -155,7 +221,10 @@ local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, 
             for col = 1, width do
                 mineCell()
                 if col < width then
-                    safeForward()
+                    if not safeForward() then
+                        turtle.turnLeft() -- face back +Z
+                        return
+                    end
                 end
             end
             turtle.turnLeft()   -- +X -> +Z
@@ -164,7 +233,10 @@ local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, 
             for col = 1, width do
                 mineCell()
                 if col < width then
-                    safeForward()
+                    if not safeForward() then
+                        turtle.turnRight() -- face back +Z
+                        return
+                    end
                 end
             end
             turtle.turnRight()  -- -X -> +Z
@@ -178,7 +250,9 @@ local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, 
         end
 
         if row < depth then
-            safeForward()        -- next row along +Z
+            if not safeForward() then
+                return
+            end
             goingPositiveX = not goingPositiveX
         end
     end
@@ -195,7 +269,10 @@ function lane_miner.mine(job, statusCallback)
     if job.xOffset and job.xOffset > 0 then
         turtle.turnRight()  -- +Z -> +X
         for _ = 1, job.xOffset do
-            safeForward()
+            if not safeForward() then
+                turtle.turnLeft()
+                return
+            end
         end
         turtle.turnLeft()   -- +X -> +Z
     end
@@ -204,7 +281,9 @@ function lane_miner.mine(job, statusCallback)
     local startLayer = loadProgress(jobId)
     if startLayer > 1 then
         for _ = 1, startLayer - 1 do
-            safeDown()
+            if not safeDown() then
+                return
+            end
         end
     end
 
@@ -215,11 +294,13 @@ function lane_miner.mine(job, statusCallback)
         saveProgress(jobId, layer)
 
         if layer < totalLayers then
-            safeDown()
+            if not safeDown() then
+                break
+            end
         end
     end
 
-    -- job completed: reset saved layer
+    -- job completed or aborted: reset saved layer
     saveProgress(jobId, 1)
 
     if statusCallback then

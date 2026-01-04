@@ -15,7 +15,11 @@ local function send(m)
 end
 
 send(protocol.hello(id))
-
+for i = 1, 16 do
+    turtle.select(i)
+    turtle.refuel(1)
+end
+turtle.select(1)
 while true do
     if not job then
         send(protocol.jobRequest(id))

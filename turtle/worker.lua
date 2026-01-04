@@ -1,139 +1,42 @@
--- turtle/worker.lua
--- Miner worker that requests jobs from dispatcher.
--- Toggle DRY_RUN below to simulate mining without damaging the world.
-
 local protocol = require("protocol")
-local lane_miner = require("lane_miner")
+local miner = require("lane_miner")
 local inventory = require("inventory")
 local nav = require("navigation")
 
--- DRY RUN: when true, the miner will simulate movement/digs and avoid dropping items.
--- Toggle to `true` while testing in creative to verify behavior.
-local DRY_RUN = false
+local modem = peripheral.find("modem") or error("No modem")
+modem.open(protocol.CHANNEL)
 
-inventory.DRY_RUN = DRY_RUN
+local id = os.getComputerLabel() or tostring(os.getComputerID())
+local job = nil
 
-local modem = peripheral.find("modem")
-if not modem then
-    error("No modem attached to turtle")
+local function send(t)
+    modem.transmit(protocol.CHANNEL, protocol.CHANNEL, protocol.encode(t))
 end
 
-local CHANNEL = protocol.CHANNEL
-modem.open(CHANNEL)
-
--- Use computer label as ID, or fallback
-local id = os.getComputerLabel() or ("turtle_" .. os.getComputerID())
-
--- Record starting GPS position for return-to-surface
-local startX, startY, startZ = gps.locate(5)
-if not startX then
-    print("Warning: GPS not available at startup; return-to-surface will be limited.")
-end
-
-local currentJob = nil
-local status = "idle"
-local progress = 0
-
-local function send(msg)
-    modem.transmit(CHANNEL, CHANNEL, protocol.encode(msg))
-end
-
-local function heartbeat()
-    local fuel = turtle.getFuelLevel()
-    send(protocol.heartbeat(id, status, currentJob and currentJob.jobId or nil, progress, fuel))
-end
-
-local function requestJob()
-    send(protocol.jobRequest(id))
-end
-
-local function announceHello()
+local function loop()
     send(protocol.hello(id))
-end
-
-local function reportError(message)
-    send(protocol.errorMsg(id, message))
-end
-
--- Event handler
-local function handleMessage(_, side, ch, reply, message)
-    if ch ~= CHANNEL then return end
-    local data = protocol.decode(message)
-    if not data or type(data) ~= "table" then return end
-    if data.id and data.id ~= id then return end
-
-    if data.type == "assign_job" then
-        currentJob = data.job
-    end
-end
-
--- Background heartbeat
-local function heartbeatLoop()
     while true do
-        heartbeat()
-        sleep(5)
-    end
-end
-
--- Mining loop
-local function miningLoop()
-    announceHello()
-
-    while true do
-        if not currentJob then
-            status = "idle"
-            progress = 0
-            requestJob()
-            sleep(3)
+        if not job then
+            send(protocol.jobRequest(id))
+            sleep(2)
         else
-            status = "mining"
-            progress = 0
-
-            if inventory.isFull() then
-                inventory.dumpToChest()
-            end
-
-            local ok, err = pcall(function()
-                lane_miner.mineLane(currentJob, function(p)
-                    progress = p
-                end)
+            miner.mineLane(job,function(p)
+                send(protocol.heartbeat(id,"mining",job.jobId,p,turtle.getFuelLevel()))
             end)
-
-            if not ok then
-                status = "error"
-                reportError(err)
-                currentJob = nil
-                sleep(5)
-            else
-                -- Try return-to-surface if we have a valid start position
-                if startX and startY and startZ then
-                    pcall(function()
-                        nav.returnToSurface(startX, startY, startZ)
-                    end)
-                end
-
-                inventory.dumpToChest()
-
-                status = "finished"
-                progress = 100
-                send(protocol.jobDone(id, currentJob.jobId))
-                currentJob = nil
-                sleep(2)
-            end
+            send(protocol.jobDone(id,job.jobId))
+            job = nil
         end
     end
 end
 
--- Main event loop
-parallel.waitForAny(
-    heartbeatLoop,
-    miningLoop,
-    function()
-        while true do
-            local ev = {os.pullEvent()}
-            if ev[1] == "modem_message" then
-                handleMessage(table.unpack(ev))
-            end
+local function listen()
+    while true do
+        local _,_,_,_,msg = os.pullEvent("modem_message")
+        local d = protocol.decode(msg)
+        if d and d.type=="assign_job" and d.id==id then
+            job = d.job
         end
     end
-)
+end
+
+parallel.waitForAny(loop, listen)

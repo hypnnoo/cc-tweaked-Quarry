@@ -1,385 +1,87 @@
--- dispatcher/main.lua
--- Native term-based GUI dispatcher (static layout)
--- Added: per-miner stats (uptime, jobs completed) and colored job progress bars
-
 local protocol = require("protocol")
 local config = require("config")
 
-local modem = peripheral.find("modem")
-if not modem then
-    error("No modem attached to dispatcher computer")
-end
+local modem = peripheral.find("modem") or error("No modem")
 modem.open(config.CHANNEL)
 
--- Redirect display to an attached monitor (2x2 advanced monitors create one big monitor)
 local monitor = peripheral.find("monitor")
 if monitor then
-    -- Try to set a smaller text scale so more fits on a 2x2 surface. Use pcall in case it fails.
-    pcall(function() monitor.setTextScale(0.5) end)
-
-    -- Redirect the terminal to the monitor so all term.* calls draw there
     term.redirect(monitor)
-    -- Clear the monitor and set a comfortable background
-    monitor.setBackgroundColor(colors.black)
-    monitor.clear()
+    pcall(function() monitor.setTextScale(0.5) end)
 end
 
--- State
-local turtles = {}      -- [id] = {status, jobId, progress, fuel, lastSeen, startedAt, jobsCompleted}
-local jobsQueue = config.generateLaneJobs()  -- pending jobs
-local activeJobs = {}   -- [jobId] = turtleId
-local logLines = {}     -- simple log buffer
+local turtles = {}
+local jobs = config.generateLaneJobs()
+local paused = false
+local W,H = term.getSize()
+local BTN_Y = H-1
 
--- Layout (static)
-local termW, termH = term.getSize()
-local turtlePanelW = 48
-local fuelPanelW   = 16
-local logPanelW    = termW - turtlePanelW - fuelPanelW - 3 -- borders
-local headerY      = 1
-local contentTop   = 3
-local contentBottom = termH - 2
-
--- Logging
-local function log(msg)
-    local line = os.date("%H:%M:%S") .. " " .. msg
-    table.insert(logLines, line)
-    if #logLines > (contentBottom - contentTop + 1) then
-        table.remove(logLines, 1)
-    end
+local function send(m)
+    modem.transmit(config.CHANNEL,config.CHANNEL,protocol.encode(m))
 end
 
--- Helpers
-local function pad(s, len)
-    s = tostring(s or "")
-    if #s >= len then return s:sub(1, len) end
-    return s .. string.rep(" ", len - #s)
-end
-
-local function formatUptime(startEpoch)
-    if not startEpoch then return "-" end
-    local now = os.epoch("local")
-    local ms = now - startEpoch
-    if ms < 0 then ms = 0 end
-    local secs = math.floor(ms / 1000)
-    local h = math.floor(secs / 3600)
-    local m = math.floor((secs % 3600) / 60)
-    local s = secs % 60
-    if h > 0 then
-        return string.format("%dh%02dm%02ds", h, m, s)
-    elseif m > 0 then
-        return string.format("%dm%02ds", m, s)
-    else
-        return string.format("%ds", s)
-    end
-end
-
-local function drawProgressBar(x, y, width, percent)
-    -- Draw a colored progress bar using background colors.
-    local barWidth = math.max(2, width - 2) -- space inside [ ]
-    local filled = math.floor((percent / 100) * barWidth + 0.5)
-    if filled < 0 then filled = 0 end
-    if filled > barWidth then filled = barWidth end
-
-    local col = colors.red
-    if percent >= 75 then
-        col = colors.green
-    elseif percent >= 40 then
-        col = colors.yellow
-    else
-        col = colors.red
-    end
-
-    -- Draw left bracket
-    term.setCursorPos(x, y)
-    term.setBackgroundColor(colors.gray)
-    term.setTextColor(colors.white)
-    term.write("[")
-
-    -- Draw filled portion
-    term.setBackgroundColor(col)
-    for i = 1, filled do
-        term.write(" ")
-    end
-
-    -- Draw empty portion
-    term.setBackgroundColor(colors.gray)
-    for i = 1, (barWidth - filled) do
-        term.write(" ")
-    end
-
-    -- Draw right bracket
-    term.setBackgroundColor(colors.gray)
-    term.write("]")
-
-    -- Reset background and write percentage
-    term.setBackgroundColor(colors.black)
-    term.setTextColor(colors.white)
-    local pctStr = (" %3d%%"):format(percent)
-    if #pctStr + x + barWidth + 2 - 1 <= x + width - 1 then
-        term.setCursorPos(x + barWidth + 3, y)
-        term.write(pctStr)
-    end
-end
-
--- Job assignment
-local function assignJobToTurtle(turtleId)
-    if #jobsQueue == 0 then
-        log("No jobs left to assign")
-        return
-    end
-    local job = table.remove(jobsQueue, 1)
-    activeJobs[job.jobId] = turtleId
-
-    local msg = protocol.jobAssign(turtleId, job)
-    modem.transmit(config.CHANNEL, config.CHANNEL, protocol.encode(msg))
-    log(("Assigned %s to %s"):format(job.jobId, turtleId))
-
-    turtles[turtleId] = turtles[turtleId] or {}
-    turtles[turtleId].status = "assigned"
-    turtles[turtleId].jobId = job.jobId
-end
-
--- Rendering helpers
-local function drawBox(x1, y1, x2, y2, title)
-    term.setBackgroundColor(colors.gray)
-    term.setTextColor(colors.white)
-    for y = y1, y2 do
-        term.setCursorPos(x1, y)
-        term.write(string.rep(" ", x2 - x1 + 1))
-    end
-
-    -- top border
-    term.setCursorPos(x1, y1)
-    term.write("+" .. string.rep("-", x2 - x1 - 1) .. "+")
-    -- bottom border
-    term.setCursorPos(x1, y2)
-    term.write("+" .. string.rep("-", x2 - x1 - 1) .. "+")
-    -- sides
-    for y = y1 + 1, y2 - 1 do
-        term.setCursorPos(x1, y)
-        term.write("|")
-        term.setCursorPos(x2, y)
-        term.write("|")
-    end
-
-    if title then
-        term.setCursorPos(x1 + 2, y1)
-        term.setTextColor(colors.yellow)
-        term.write(title)
-        term.setTextColor(colors.white)
-    end
-end
-
-local function drawHeader()
-    term.setBackgroundColor(colors.black)
-    term.setTextColor(colors.yellow)
-    term.setCursorPos(2, headerY)
-    term.clearLine()
-    term.write("Quarry Dispatcher - Static GUI")
-end
-
-local function drawButtons()
-    local y = termH - 1
-    term.setBackgroundColor(colors.black)
-    term.setCursorPos(2, y)
-    term.setTextColor(colors.white)
-    term.clearLine()
-    term.setCursorPos(2, y)
-    term.write("[R]eload Jobs   [C]lear Jobs")
-end
-
-local function drawTurtlePanel()
-    local x1 = 1
-    local x2 = turtlePanelW
-    local y1 = contentTop - 1
-    local y2 = contentBottom
-    drawBox(x1, y1, x2, y2, "Turtles")
-
-    local row = contentTop
-    -- header row in panel
-    term.setCursorPos(x1 + 1, row)
-    term.setTextColor(colors.white)
-    term.setBackgroundColor(colors.gray)
-    term.write(pad("ID", 14) .. pad("STATUS", 12) .. pad("UPTIME", 10) .. pad("FUEL", 6) .. pad("JOBS", 6))
-    row = row + 1
-
-    for id, t in pairs(turtles) do
-        if row > contentBottom then break end
-
-        local status = t.status or "unknown"
-        local uptime = formatUptime(t.startedAt)
-        local fuel = tostring(t.fuel or 0)
-        local jobsDone = tostring(t.jobsCompleted or 0)
-
-        -- Line 1: brief summary
-        term.setCursorPos(x1 + 1, row)
-        term.setTextColor(colors.white)
-        term.setBackgroundColor(colors.gray)
-        local idStr = pad(id, 14)
-        local statusStr = pad(status, 12)
-        local uptimeStr = pad(uptime, 10)
-        local fuelStr = pad(fuel, 6)
-        local jobsStr = pad(jobsDone, 6)
-        local line = idStr .. statusStr .. uptimeStr .. fuelStr .. jobsStr
-        term.write(line:sub(1, turtlePanelW - 2))
-        row = row + 1
-        if row > contentBottom then break end
-
-        -- Line 2: colored progress bar and details
-        local barWidth = turtlePanelW - 6
-        local pct = t.progress or 0
-        term.setBackgroundColor(colors.gray)
-        term.setTextColor(colors.white)
-        drawProgressBar(x1 + 2, row, barWidth, pct)
-        row = row + 1
-    end
-end
-
-local function drawFuelPanel()
-    local x1 = turtlePanelW + 1
-    local x2 = turtlePanelW + fuelPanelW
-    local y1 = contentTop - 1
-    local y2 = contentBottom
-    drawBox(x1, y1, x2, y2, "Fuel")
-
-    local row = contentTop
-    for id, t in pairs(turtles) do
-        if row > contentBottom then break end
-        local fuel = t.fuel or 0
-        local label = ("%s: %d"):format(id, fuel)
-        term.setCursorPos(x1 + 1, row)
-        term.setBackgroundColor(colors.gray)
-        if tonumber(fuel) and fuel < 500 then
-            term.setTextColor(colors.red)
-        else
-            term.setTextColor(colors.green)
-        end
-        term.write(label:sub(1, fuelPanelW - 2))
-        row = row + 1
-    end
-end
-
-local function drawLogPanel()
-    local x1 = turtlePanelW + fuelPanelW + 1
-    local x2 = termW
-    local y1 = contentTop - 1
-    local y2 = contentBottom
-    drawBox(x1, y1, x2, y2, "Log")
-
-    local maxLines = contentBottom - contentTop + 1
-    local start = math.max(1, #logLines - maxLines + 1)
-    local row = contentTop
-
-    term.setBackgroundColor(colors.gray)
-    term.setTextColor(colors.white)
-    for i = start, #logLines do
-        if row > contentBottom then break end
-        term.setCursorPos(x1 + 1, row)
-        term.write(logLines[i]:sub(1, logPanelW - 2))
-        row = row + 1
-    end
-end
-
-local function redraw()
+local function draw()
     term.setBackgroundColor(colors.black)
     term.clear()
-    drawHeader()
-    drawButtons()
-    drawTurtlePanel()
-    drawFuelPanel()
-    drawLogPanel()
-end
+    term.setCursorPos(2,1)
+    term.setTextColor(colors.yellow)
+    term.write("Quarry Dispatcher")
 
--- Message handling
-local function handleMessage(_, side, ch, reply, message)
-    if ch ~= config.CHANNEL then return end
-    local data = protocol.decode(message)
-    if not data or type(data) ~= "table" then return end
-
-    local id = data.id
-    if not id then return end
-
-    turtles[id] = turtles[id] or {}
-    -- set startedAt first time we see this turtle
-    if not turtles[id].startedAt then
-        turtles[id].startedAt = os.epoch("local")
-        turtles[id].jobsCompleted = turtles[id].jobsCompleted or 0
-    end
-    turtles[id].lastSeen = os.epoch("local")
-
-    if data.type == "hello" then
-        turtles[id].status = "hello"
-        log("Hello from " .. id)
-
-    elseif data.type == "heartbeat" then
-        turtles[id].status = data.status or turtles[id].status
-        turtles[id].jobId = data.jobId or turtles[id].jobId
-        turtles[id].progress = data.progress or 0
-        turtles[id].fuel = data.fuel or 0
-
-    elseif data.type == "request_job" then
-        turtles[id].status = "requesting_job"
-        assignJobToTurtle(id)
-
-    elseif data.type == "job_done" then
-        if activeJobs[data.jobId] == id then
-            activeJobs[data.jobId] = nil
-        end
-        turtles[id].status = "idle"
-        turtles[id].jobId = nil
-        turtles[id].progress = 100
-        turtles[id].jobsCompleted = (turtles[id].jobsCompleted or 0) + 1
-        turtles[id].progress = 0
-        log(("Job %s done by %s"):format(data.jobId, id))
-
-    elseif data.type == "error" then
-        turtles[id].status = "error"
-        log(("Error from %s: %s"):format(id, data.message or ""))
+    local y=3
+    for id,t in pairs(turtles) do
+        term.setCursorPos(2,y)
+        term.setTextColor(colors.white)
+        term.write(id.." | "..(t.status or "?").." | Fuel "..(t.fuel or 0))
+        y=y+1
     end
 
-    redraw()
+    term.setCursorPos(2,BTN_Y)
+    term.setTextColor(colors.green)
+    term.write("[ Reload ]")
+    term.setCursorPos(14,BTN_Y)
+    term.setTextColor(colors.red)
+    term.write("[ Clear ]")
+    term.setCursorPos(26,BTN_Y)
+    term.setTextColor(paused and colors.red or colors.green)
+    term.write(paused and "[ Resume ]" or "[ Pause ]")
 end
 
--- Timeout checker
-local function timeoutLoop()
-    while true do
-        local now = os.epoch("local")
-        for id, t in pairs(turtles) do
-            if t.lastSeen and now - t.lastSeen > 30000 then -- 30 seconds
-                t.status = "timeout"
-            end
-        end
-        redraw()
-        sleep(5)
+local function click(x,y)
+    if y~=BTN_Y then return end
+    if x>=2 and x<=10 then
+        jobs=config.generateLaneJobs()
+    elseif x>=14 and x<=22 then
+        jobs={}
+    elseif x>=26 and x<=35 then
+        paused=not paused
     end
+    draw()
 end
 
--- Input handler (keyboard + modem events)
-local function inputLoop()
-    while true do
-        local ev = {os.pullEvent()}
-        if ev[1] == "modem_message" then
-            -- forward entire event args to handler (event, side, channel, reply, message, distance)
-            handleMessage(table.unpack(ev))
-        elseif ev[1] == "char" then
-            local ch = ev[2]
-            if ch == "r" or ch == "R" then
-                jobsQueue = config.generateLaneJobs()
-                log("Jobs reloaded")
-                redraw()
-            elseif ch == "c" or ch == "C" then
-                jobsQueue = {}
-                activeJobs = {}
-                log("Cleared jobs (no new assignments)")
-                redraw()
-            end
+local function assign(id)
+    if paused or #jobs==0 then return end
+    local j=table.remove(jobs,1)
+    send(protocol.jobAssign(id,j))
+end
+
+draw()
+
+while true do
+    local e={os.pullEvent()}
+    if e[1]=="monitor_touch" then
+        click(e[3],e[4])
+
+    elseif e[1]=="modem_message" then
+        local d=protocol.decode(e[5])
+        if d and d.id then
+            turtles[d.id]=turtles[d.id] or {}
+            local t=turtles[d.id]
+            if d.type=="hello" then t.status="online"
+            elseif d.type=="heartbeat" then t.status=d.status t.fuel=d.fuel
+            elseif d.type=="request_job" then assign(d.id)
+            elseif d.type=="job_done" then t.status="idle" end
+            draw()
         end
     end
 end
 
--- Start
-redraw()
-log("Dispatcher started. Waiting for turtles...")
-redraw()
-
-parallel.waitForAny(timeoutLoop, inputLoop)

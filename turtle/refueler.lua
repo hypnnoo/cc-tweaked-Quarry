@@ -1,16 +1,12 @@
 -- turtle/refueler.lua
 -- Smart refueler:
---  - Listens for miner heartbeats (fuel levels)
+--  - Listens for miner heartbeats (fuel levels + GPS coords)
 --  - Tracks which turtles are low on fuel
 --  - For each "low fuel" turtle:
---      * fill a lava bucket from pool beneath refueler
---      * walk to that turtle and drop the bucket directly into its inventory
---      * return home
---
--- Assumes:
---  - Refueler starts at "home" standing over a lava source block.
---  - From home, quarry miner turtle is 5 blocks FORWARD and 10 blocks LEFT,
---    relative to the refueler's starting facing direction.
+--      * ensure a lava bucket (from lava pool under home)
+--      * walk via GPS to that turtle's current coordinates
+--      * drop the bucket directly into the turtle's inventory
+--      * walk back home via GPS
 
 local protocol = require("protocol")
 
@@ -23,18 +19,20 @@ modem.open(protocol.CHANNEL)
 local FUEL_THRESHOLD       = 20000  -- when a miner is considered "low"
 local MAX_SERVICE_ATTEMPTS = 3
 
-local FORWARD_STEPS_TO_TURTLE = 5
-local LEFT_STEPS_TO_TURTLE    = 10
-
 ----------------------------------------------------------------
 -- STATE
 ----------------------------------------------------------------
-local turtles   = {}   -- id -> { fuel, attempts, inQueue }
-local fuelQueue = {}   -- FIFO of turtle IDs needing fuel
+local turtles   = {}   -- id -> { fuel, x, y, z, attempts, inQueue }
+local fuelQueue = {}   -- FIFO queue of turtle IDs
+
+-- Refueler GPS + facing
+local homeX, homeY, homeZ = nil, nil, nil
+local facing              = nil  -- "north","south","east","west"
 
 ----------------------------------------------------------------
--- MOVEMENT HELPERS
+-- MOVEMENT HELPERS (GPS-aware)
 ----------------------------------------------------------------
+
 local function safeDig()
     if turtle.detect() then
         turtle.dig()
@@ -49,46 +47,141 @@ local function safeForward()
     end
 end
 
--- From home -> miner turtle (5 forward, 10 left, then face turtle)
-local function goToTurtle(id, data)
-    -- 1) Go forward 5
-    for _ = 1, FORWARD_STEPS_TO_TURTLE do
-        safeForward()
+local function safeUp()
+    while not turtle.up() do
+        if turtle.detectUp() then turtle.digUp() end
+        sleep(0.05)
     end
-
-    -- 2) Turn left and go 10
-    turtle.turnLeft()
-    for _ = 1, LEFT_STEPS_TO_TURTLE do
-        safeForward()
-    end
-
-    -- 3) Turn right to face turtle
-    turtle.turnRight()
 end
 
--- From miner turtle back to home (reverse the above path)
-local function goHome(data)
-    -- Assume we're facing the turtle.
-    -- Turn around:
-    turtle.turnLeft()
-    turtle.turnLeft()
-
-    -- Walk back LEFT_STEPS_TO_TURTLE (now effectively "right" from original)
-    for _ = 1, LEFT_STEPS_TO_TURTLE do
-        safeForward()
+local function safeDown()
+    while not turtle.down() do
+        if turtle.detectDown() then turtle.digDown() end
+        sleep(0.05)
     end
+end
 
-    -- Turn right to face back toward home
+local function turnLeft()
+    turtle.turnLeft()
+    if facing == "north" then
+        facing = "west"
+    elseif facing == "west" then
+        facing = "south"
+    elseif facing == "south" then
+        facing = "east"
+    elseif facing == "east" then
+        facing = "north"
+    end
+end
+
+local function turnRight()
     turtle.turnRight()
+    if facing == "north" then
+        facing = "east"
+    elseif facing == "east" then
+        facing = "south"
+    elseif facing == "south" then
+        facing = "west"
+    elseif facing == "west" then
+        facing = "north"
+    end
+end
 
-    -- Walk back FORWARD_STEPS_TO_TURTLE
-    for _ = 1, FORWARD_STEPS_TO_TURTLE do
-        safeForward()
+local function face(dir)
+    if facing == nil then return end
+    while facing ~= dir do
+        turnRight()
+    end
+end
+
+local function currentPos()
+    local x, y, z = gps.locate(3)
+    return x, y, z
+end
+
+local function moveTo(targetX, targetY, targetZ)
+    local x, y, z = currentPos()
+    if not x then
+        print("[Refueler] GPS unavailable while moving!")
+        return
     end
 
-    -- Turn around to original "toward turtle" direction
-    turtle.turnLeft()
-    turtle.turnLeft()
+    -- Move vertically first to avoid weird holes
+    while y < targetY do
+        safeUp()
+        x, y, z = currentPos()
+    end
+    while y > targetY do
+        safeDown()
+        x, y, z = currentPos()
+    end
+
+    -- Move in X
+    while x ~= targetX do
+        if x < targetX then
+            face("east")
+        else
+            face("west")
+        end
+        safeForward()
+        x, y, z = currentPos()
+    end
+
+    -- Move in Z
+    while z ~= targetZ do
+        if z < targetZ then
+            face("south")
+        else
+            face("north")
+        end
+        safeForward()
+        x, y, z = currentPos()
+    end
+end
+
+----------------------------------------------------------------
+-- INITIAL GPS + FACING CALIBRATION
+----------------------------------------------------------------
+
+local function calibrateHomeAndFacing()
+    local x1, y1, z1 = gps.locate(5)
+    if not x1 then
+        error("[Refueler] GPS locate failed at startup (need working GPS constellation).")
+    end
+    homeX, homeY, homeZ = x1, y1, z1
+
+    -- Calibrate facing by moving forward one block and seeing how coords change
+    safeForward()
+    local x2, y2, z2 = gps.locate(5)
+    if not x2 then
+        error("[Refueler] GPS locate failed during facing calibration.")
+    end
+
+    local dx = x2 - x1
+    local dz = z2 - z1
+
+    if dx == 1 and dz == 0 then
+        facing = "east"
+    elseif dx == -1 and dz == 0 then
+        facing = "west"
+    elseif dz == 1 and dx == 0 then
+        facing = "south"
+    elseif dz == -1 and dx == 0 then
+        facing = "north"
+    else
+        error("[Refueler] Could not determine facing from GPS delta.")
+    end
+
+    -- Move back to original home position
+    face( (dx == 1 and "west")
+       or (dx == -1 and "east")
+       or (dz == 1 and "north")
+       or "south" )
+    safeForward()
+    face("north")  -- arbitrary default; facing var will be updated accordingly by turns
+    -- Re-snap home coords
+    homeX, homeY, homeZ = gps.locate(5)
+    print(string.format("[Refueler] Home at (%.1f, %.1f, %.1f), facing %s", homeX, homeY, homeZ, tostring(facing)))
 end
 
 ----------------------------------------------------------------
@@ -161,14 +254,17 @@ local function handleHeartbeat(d)
     local fuel = tonumber(d.fuel or 0) or 0
     turtles[id]      = turtles[id] or {}
     turtles[id].fuel = fuel
+    turtles[id].x    = d.x
+    turtles[id].y    = d.y
+    turtles[id].z    = d.z
 
-    if fuel > 0 and fuel < FUEL_THRESHOLD then
+    if fuel > 0 and fuel < FUEL_THRESHOLD and d.x and d.y and d.z then
         enqueueFuelRequest(id)
     end
 end
 
 local function handleAssignJob(d)
-    -- Reserved for future multi-turtle routing; not used in single-turtle direct mode
+    -- Reserved for future multi-turtle routing; not required for GPS pathing.
     local id = d.id
     turtles[id] = turtles[id] or {}
 end
@@ -208,18 +304,23 @@ local function serviceLoop()
 
                 if data.attempts > MAX_SERVICE_ATTEMPTS then
                     print("[Refueler] Giving up on turtle:", id)
+                elseif not (data.x and data.y and data.z) then
+                    print("[Refueler] No GPS coords for turtle:", id)
                 else
-                    print("[Refueler] Servicing turtle:", id)
+                    print(string.format("[Refueler] Servicing turtle %s at (%.1f, %.1f, %.1f)",
+                        id, data.x, data.y, data.z))
 
                     local bucketSlot = ensureFullBucket()
                     if bucketSlot then
-                        goToTurtle(id, data)
+                        -- 1) Go from home to turtle position
+                        moveTo(data.x, data.y, data.z)
 
-                        -- Drop one lava bucket directly into miner inventory
+                        -- 2) Drop lava bucket directly into turtle inventory
                         turtle.select(bucketSlot)
                         turtle.drop(1)
 
-                        goHome(data)
+                        -- 3) Return home
+                        moveTo(homeX, homeY, homeZ)
                     end
                 end
             end
@@ -231,5 +332,7 @@ end
 -- START
 ----------------------------------------------------------------
 
-print("[Refueler] Smart direct-delivery refueler started. Listening for low-fuel miners...")
+print("[Refueler] Starting GPS-based refueler...")
+calibrateHomeAndFacing()
+print("[Refueler] Listening for low-fuel miners...")
 parallel.waitForAny(eventLoop, serviceLoop)

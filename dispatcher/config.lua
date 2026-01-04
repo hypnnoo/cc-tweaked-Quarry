@@ -1,34 +1,45 @@
 -- dispatcher/config.lua
+
 local config = {}
 
+-- Radio
 config.CHANNEL = 42069
 
--- EXACT chunk-sized quarry: 16 (X) × 16 (Z) × 200 (Y depth)
+-- Quarry definition: 16 x 16 area, 200 blocks down
+-- Turtles are lined up along X, all facing +Z into the quarry.
 config.QUARRY = {
-    width  = 16,   -- X
-    depth  = 16,   -- Z
-    height = 200,  -- layers down
+    width  = 16,   -- total width across all lanes (X)
+    depth  = 16,   -- how far forward to mine (Z)
+    height = 200,  -- how many blocks down to mine (Y)
 }
 
--- Start with 1 lane/turtle while you tune it.
--- Later you can bump this up and spread turtles.
+-- Number of lanes / turtles
+-- Start with 1; if you add more turtles, set LANES=2,4,etc.
 config.LANES = 1
 
+-- Generate lane jobs splitting width evenly across lanes
 function config.generateLaneJobs()
     local jobs = {}
-    local laneWidth = math.floor(config.QUARRY.width / config.LANES)
-    local remainder = config.QUARRY.width % config.LANES
+    local totalWidth = config.QUARRY.width
+    local lanes      = config.LANES
+
+    local baseWidth = math.floor(totalWidth / lanes)
+    local remainder = totalWidth % lanes
 
     local x = 0
-    for lane = 1, config.LANES do
-        local w = laneWidth
-        if lane == config.LANES then w = w + remainder end
+    for lane = 1, lanes do
+        local w = baseWidth
+        if lane == lanes then
+            w = w + remainder
+        end
+
+        local jobId = "lane_" .. lane
 
         table.insert(jobs, {
-            jobId   = "lane_" .. lane,
+            jobId   = jobId,
             lane    = lane,
-            xOffset = x,                  -- blocks along X from turtle start
-            width   = w,                  -- lane width
+            xOffset = x,                 -- turtle moves xOffset blocks along X to reach its lane
+            width   = w,                 -- lane width
             depth   = config.QUARRY.depth,
             height  = config.QUARRY.height,
         })

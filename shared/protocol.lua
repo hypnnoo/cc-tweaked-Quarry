@@ -1,21 +1,50 @@
 -- shared/protocol.lua
-local p = {}
+-- Simple message helpers for dispatcher <-> turtles
 
-p.CHANNEL = 42069
+local protocol = {}
 
-function p.encode(t) return textutils.serialize(t) end
-function p.decode(s)
-    local ok, r = pcall(textutils.unserialize, s)
-    if ok then return r end
+protocol.CHANNEL = 42069  -- radio channel
+
+function protocol.encode(tbl)
+    return textutils.serialize(tbl)
 end
 
-function p.hello(id)         return {type="hello",        id=id} end
-function p.jobRequest(id)    return {type="request_job",  id=id} end
-function p.jobAssign(id,job) return {type="assign_job",   id=id, job=job} end
-function p.jobDone(id,j)     return {type="job_done",     id=id, jobId=j} end
-function p.errorMsg(id,m)    return {type="error",        id=id, message=m} end
+function protocol.decode(str)
+    local ok, result = pcall(textutils.unserialize, str)
+    if ok then return result else return nil end
+end
 
-function p.heartbeat(id,status,jobId,progress,fuel)
+function protocol.hello(id)
+    return {
+        type = "hello",
+        id   = id,
+    }
+end
+
+function protocol.jobRequest(id)
+    return {
+        type = "request_job",
+        id   = id,
+    }
+end
+
+function protocol.jobAssign(id, job)
+    return {
+        type = "assign_job",
+        id   = id,
+        job  = job,
+    }
+end
+
+function protocol.jobDone(id, jobId)
+    return {
+        type  = "job_done",
+        id    = id,
+        jobId = jobId,
+    }
+end
+
+function protocol.heartbeat(id, status, jobId, progress, fuel)
     return {
         type     = "heartbeat",
         id       = id,
@@ -27,4 +56,12 @@ function p.heartbeat(id,status,jobId,progress,fuel)
     }
 end
 
-return p
+function protocol.errorMsg(id, message)
+    return {
+        type    = "error",
+        id      = id,
+        message = message,
+    }
+end
+
+return protocol

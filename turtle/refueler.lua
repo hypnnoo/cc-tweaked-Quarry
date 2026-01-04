@@ -21,24 +21,32 @@ local FUEL_THRESHOLD = 20000
 -- How many times we try to service each low turtle before giving up
 local MAX_SERVICE_ATTEMPTS = 3
 
+-- PATH DISTANCES FROM REFUELER "HOME" TO THE QUARRY TURTLE
+-- Assumptions:
+--  - Refueler starts at home, FACING roughly toward the quarry turtle.
+--  - From refueler home:
+--      * quarry turtle is 5 blocks FORWARD (in front)
+--      * then 10 blocks LEFT
+--  - When we arrive, we are adjacent to the turtle and can drop the bucket
+--    directly into its inventory with turtle.drop(1).
+local FORWARD_STEPS_TO_TURTLE = 5
+local LEFT_STEPS_TO_TURTLE    = 10
+
 -- ASSUMPTIONS:
---  - Refueler starts at a known "home" position, standing on a solid block
---  - There is a LAVA SOURCE BLOCK directly below "home"
---  - Each miner turtle is reachable by some path from "home"
---  - When we are standing one block in front of a miner turtle and facing it,
---    calling turtle.drop(1) will put a lava bucket directly into its inventory.
---
---  - You MUST edit goToTurtle(id, data) and goHome(data) to match your world layout.
+--  - Refueler stands at "home" over a lava source block.
+--  - There is a lava source directly BELOW home.
+--  - Currently we treat all miners the same and go to the same turtle position.
+--    (If you add more miners later, we can expand this to per-id paths.)
 ----------------------------------------------------------------
 
 ----------------------------------------------------------------
 -- STATE
 ----------------------------------------------------------------
-local turtles = {}   -- id -> { fuel, needsFuel, attempts, laneOffset }
+local turtles = {}   -- id -> { fuel, needsFuel, attempts }
 local fuelQueue = {} -- { id1, id2, ... }
 
 ----------------------------------------------------------------
--- MOVEMENT HELPERS (safe-ish)
+-- MOVEMENT HELPERS
 ----------------------------------------------------------------
 local function safeDig()
     if turtle.detect() then
@@ -55,42 +63,55 @@ local function safeForward()
 end
 
 ----------------------------------------------------------------
--- PATHING: EDIT THESE FOR YOUR BASE LAYOUT
+-- PATHING
 ----------------------------------------------------------------
 
--- Go from "home" to a position DIRECTLY IN FRONT OF turtle id,
--- facing the turtle, so that turtle.drop(1) will insert into its inventory.
---
--- data.laneOffset can be used if your miner lanes are spaced along +X.
+-- Go from "home" to a position DIRECTLY IN FRONT/ADJACENT to the quarry turtle,
+-- using the given forward/left offsets.
 local function goToTurtle(id, data)
-    -- >>> EDIT THIS FUNCTION FOR YOUR WORLD <<<
-    --
-    -- Example idea if your setup is:
-    --  - All miner turtles are in a straight line along +X
-    --  - Refueler starts behind lane 1, facing +X
-    --  - laneOffset == how many blocks along +X from the first turtle
-    --
-    -- Then something like this could work:
-    --
-    -- local offset = data.laneOffset or 0
-    -- for _ = 1, offset do
-    --     safeForward()   -- walk along +X
-    -- end
-    -- -- Now, perhaps turn and move forward/backward to get in front of the turtle.
-    --
-    -- Right now, this is a stub so it doesn't move until you fill it in.
+    -- Start: at home, facing toward turtle.
+
+    -- 1) Go forward 5 blocks
+    for _ = 1, FORWARD_STEPS_TO_TURTLE do
+        safeForward()
+    end
+
+    -- 2) Turn left and go 10 blocks
+    turtle.turnLeft()
+    for _ = 1, LEFT_STEPS_TO_TURTLE do
+        safeForward()
+    end
+
+    -- 3) Turn right to roughly face the turtle
+    turtle.turnRight()
+    -- Now we should be standing by the turtle and facing it (or its side).
+    -- turtle.drop(1) from here should put the bucket into its inventory.
 end
 
--- Go from the last turtle we visited BACK to the "home" position.
---
--- You can use data.laneOffset again to reverse the path you used in goToTurtle.
+-- Go back from that turtle position to "home", reversing the path.
 local function goHome(data)
-    -- >>> EDIT THIS FUNCTION TO MATCH goToTurtle <<<
-    --
-    -- In the simple example above, you'd:
-    --  - turn around
-    --  - walk `laneOffset` blocks back
-    --  - turn back to your original facing
+    -- We assume we are facing the turtle.
+    -- Reverse the path:
+    -- 1) Turn around to face away
+    turtle.turnLeft()
+    turtle.turnLeft()
+
+    -- 2) Go back LEFT_STEPS_TO_TURTLE (which is now "right" from original)
+    for _ = 1, LEFT_STEPS_TO_TURTLE do
+        safeForward()
+    end
+
+    -- 3) Turn right to face back toward home
+    turtle.turnRight()
+
+    -- 4) Go back FORWARD_STEPS_TO_TURTLE
+    for _ = 1, FORWARD_STEPS_TO_TURTLE do
+        safeForward()
+    end
+
+    -- 5) Turn around so we face the original "toward turtle" direction again
+    turtle.turnLeft()
+    turtle.turnLeft()
 end
 
 ----------------------------------------------------------------
@@ -174,11 +195,10 @@ local function handleHeartbeat(d)
 end
 
 local function handleAssignJob(d)
+    -- We don't actually need job info for single-turtle direct delivery,
+    -- but we keep the handler in case you expand later.
     local id  = d.id
-    local job = d.job or {}
     turtles[id] = turtles[id] or {}
-    -- laneOffset lets us know where along X that turtle's lane starts
-    turtles[id].laneOffset = job.xOffset or 0
 end
 
 local function eventLoop()
@@ -222,7 +242,7 @@ local function serviceLoop()
                     -- 1) Ensure we have a full lava bucket
                     local bucketSlot = ensureFullBucket()
                     if bucketSlot then
-                        -- 2) Walk to position in front of this turtle
+                        -- 2) Walk to position in front/adjacent to this turtle
                         goToTurtle(id, data)
 
                         -- 3) Drop ONE lava bucket directly into the turtle's inventory

@@ -1,32 +1,56 @@
 -- turtle/lane_miner.lua
--- Simplified lane miner with:
---  - skip-mining air blocks
---  - batch unload only when inventory is near-full
+-- Simplified lane miner:
+--  - Skip-mines air (only digs when there's a block)
+--  - Batch unload when inventory is near-full
+--  - Skips already completed layers on resume using progress file
 
 local inventory = require("inventory")
-
 local lane_miner = {}
 
--- how many empty slots we still allow before dumping
-local NEAR_FULL_EMPTY_SLOTS = 2
+local NEAR_FULL_EMPTY_SLOTS = 2  -- dump when <= this many empty slots
 
--- Fuel: prefer lava buckets, fall back to any fuel
+-- progress persistence per job
+local function progressFile(jobId)
+    return "lane_progress_" .. tostring(jobId or "default") .. ".dat"
+end
+
+local function saveProgress(jobId, layer)
+    local path = progressFile(jobId)
+    local h = fs.open(path, "w")
+    if not h then return end
+    h.writeLine(tostring(layer))
+    h.close()
+end
+
+local function loadProgress(jobId)
+    local path = progressFile(jobId)
+    if not fs.exists(path) then return 1 end
+    local h = fs.open(path, "r")
+    if not h then return 1 end
+    local line = h.readLine()
+    h.close()
+    local n = tonumber(line)
+    if not n or n < 1 then n = 1 end
+    return n
+end
+
+-- Fuel: prefer lava buckets, then anything else
 local function ensureFuel()
     local lvl = turtle.getFuelLevel()
     if lvl == "unlimited" or lvl > 500 then return true end
 
-    -- 1) Lava buckets first
+    -- lava buckets first
     for slot = 1, 16 do
         turtle.select(slot)
-        local detail = turtle.getItemDetail()
-        if detail and detail.name == "minecraft:lava_bucket" then
-            turtle.refuel(1)  -- consumes lava, leaves empty bucket
+        local d = turtle.getItemDetail()
+        if d and d.name == "minecraft:lava_bucket" then
+            turtle.refuel(1)
             lvl = turtle.getFuelLevel()
             if lvl > 500 then return true end
         end
     end
 
-    -- 2) Any other fuel
+    -- other fuel
     for slot = 1, 16 do
         turtle.select(slot)
         if turtle.refuel(0) then
@@ -54,7 +78,7 @@ local function digUp()
 end
 
 local function digDown()
-    -- skip-mining: only dig if there is actually a block
+    -- skip-mining: only dig while something is actually there
     while turtle.detectDown() do
         turtle.digDown()
         sleep(0.05)
@@ -63,11 +87,8 @@ end
 
 local function safeForward()
     ensureFuel()
-
-    -- skip-mining air: only dig if needed
     digForward()
     digUp()
-
     while not turtle.forward() do
         digForward()
         sleep(0.05)
@@ -83,31 +104,22 @@ local function safeDown()
     end
 end
 
--- Mine just this cell (mainly: clear below and batch-unload if near-full)
+-- Mine just this cell and batch-unload if near-full
 local function mineCell()
     digDown()
 
-    -- Batch unload only when inventory is near-full
     if inventory.isFull(NEAR_FULL_EMPTY_SLOTS) then
         inventory.dumpToChest()
     end
 end
 
--- Mine one horizontal layer of EXACT size: width (X) × depth (Z)
--- Pattern:
---  - Start each layer at lane's near corner, facing +Z into quarry
---  - Walk rows along Z, snake along X
-local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback)
-    -- We assume:
-    --  - Starting at near edge of this lane
-    --  - Facing +Z
-
+-- One horizontal layer: EXACT width (X) × depth (Z)
+local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback, jobId)
+    -- Assume facing +Z at lane start
     local goingPositiveX = true
 
     for row = 1, depth do
-        -- 1) Walk across the row in X
         if goingPositiveX then
-            -- face +X
             turtle.turnRight()  -- +Z -> +X
             for col = 1, width do
                 mineCell()
@@ -117,7 +129,6 @@ local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback)
             end
             turtle.turnLeft()   -- +X -> +Z
         else
-            -- face -X
             turtle.turnLeft()   -- +Z -> -X
             for col = 1, width do
                 mineCell()
@@ -128,7 +139,7 @@ local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback)
             turtle.turnRight()  -- -X -> +Z
         end
 
-        -- 2) Progress callback per row
+        -- progress
         if statusCallback and totalLayers and layerIndex then
             local totalRows = totalLayers * depth
             local doneRows  = (layerIndex - 1) * depth + row
@@ -136,22 +147,21 @@ local function mineLayer(width, depth, layerIndex, totalLayers, statusCallback)
             statusCallback(pct)
         end
 
-        -- 3) Move one block forward along Z to next row, unless last row
         if row < depth then
-            safeForward()
+            safeForward()        -- next row along +Z
             goingPositiveX = not goingPositiveX
         end
     end
 end
 
--- MAIN entry: called as miner.mine(job, callback) from worker.lua
--- job: { jobId, xOffset, width, depth, height }
+-- MAIN entry: miner.mine(job, callback)
 function lane_miner.mine(job, statusCallback)
     local width  = job.width
     local depth  = job.depth
     local height = job.height or 10
+    local jobId  = job.jobId
 
-    -- 1) Move sideways along +X to lane start (xOffset), then face +Z
+    -- move sideways along +X to lane start, then face +Z
     if job.xOffset and job.xOffset > 0 then
         turtle.turnRight()  -- +Z -> +X
         for _ = 1, job.xOffset do
@@ -160,16 +170,27 @@ function lane_miner.mine(job, statusCallback)
         turtle.turnLeft()   -- +X -> +Z
     end
 
+    -- Load last completed layer and skip down to it (vertical only)
+    local startLayer = loadProgress(jobId)
+    if startLayer > 1 then
+        for _ = 1, startLayer - 1 do
+            safeDown()
+        end
+    end
+
     local totalLayers = height
 
-    for layer = 1, totalLayers do
-        mineLayer(width, depth, layer, totalLayers, statusCallback)
+    for layer = startLayer, totalLayers do
+        mineLayer(width, depth, layer, totalLayers, statusCallback, jobId)
+        saveProgress(jobId, layer)
 
-        -- 2) Go down one block to start next layer, if any
         if layer < totalLayers then
             safeDown()
         end
     end
+
+    -- job completed: reset saved layer
+    saveProgress(jobId, 1)
 
     if statusCallback then
         statusCallback(100)
@@ -177,4 +198,3 @@ function lane_miner.mine(job, statusCallback)
 end
 
 return lane_miner
-

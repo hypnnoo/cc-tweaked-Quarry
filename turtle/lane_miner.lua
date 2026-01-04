@@ -1,175 +1,58 @@
--- turtle/lane_miner.lua
--- Mines a rectangular lane (width x depth) down "height" blocks.
--- Now respects inventory.DRY_RUN to simulate movement/digs without modifying the world.
-
 local inventory = require("inventory")
-
 local lane_miner = {}
 
-local function ensureFuel()
-    if turtle.getFuelLevel() == "unlimited" then return true end
+local function fuel()
+    if turtle.getFuelLevel() == "unlimited" then return end
     if turtle.getFuelLevel() < 200 then
-        -- try to refuel from inventory
-        for slot = 1, 16 do
-            turtle.select(slot)
-            if turtle.refuel(0) then
-                turtle.refuel(64)
-                if turtle.getFuelLevel() > 1000 then break end
+        for i=1,16 do
+            turtle.select(i)
+            if turtle.refuel(0) then turtle.refuel(64) end
+        end
+    end
+end
+
+local function digAll()
+    if turtle.detect() then turtle.dig() end
+    if turtle.detectUp() then turtle.digUp() end
+    if turtle.detectDown() then turtle.digDown() end
+end
+
+local function forward()
+    fuel()
+    digAll()
+    while not turtle.forward() do digAll() sleep(0.1) end
+end
+
+local function down()
+    fuel()
+    digAll()
+    while not turtle.down() do digAll() sleep(0.1) end
+end
+
+function lane_miner.mineLane(job, cb)
+    -- MOVE +X TO LANE
+    turtle.turnRight()
+    for i=1,job.xOffset do forward() end
+    turtle.turnLeft()
+
+    for y=1,job.height do
+        local dir = true
+        for z=1,job.depth do
+            for x=1,job.width do
+                digAll()
+                if x < job.width then forward() end
             end
-        end
-    end
-    return turtle.getFuelLevel() > 0
-end
-
-local function safeForward()
-    if inventory.DRY_RUN then
-        print("[DRY_RUN] forward")
-        sleep(0.02)
-        return
-    end
-
-    while turtle.detect() do
-        turtle.dig()
-        sleep(0.1)
-    end
-    while not turtle.forward() do
-        turtle.dig()
-        sleep(0.1)
-    end
-end
-
-local function safeDown()
-    if inventory.DRY_RUN then
-        print("[DRY_RUN] down")
-        sleep(0.02)
-        return
-    end
-
-    while turtle.detectDown() do
-        turtle.digDown()
-        sleep(0.1)
-    end
-    while not turtle.down() do
-        turtle.digDown()
-        sleep(0.1)
-    end
-end
-
-local function safeDigDown()
-    if inventory.DRY_RUN then
-        print("[DRY_RUN] digDown")
-        sleep(0.01)
-        return
-    end
-
-    -- repeatedly dig down until there is no block below
-    while turtle.detectDown() do
-        turtle.digDown()
-        sleep(0.05)
-    end
-end
-
-local function turn(right)
-    if right then turtle.turnRight() else turtle.turnLeft() end
-end
-
--- Move forward n blocks, digging as needed
-local function moveForwardN(n)
-    for _ = 1, n do
-        ensureFuel()
-        safeForward()
-        if inventory.isFull() then
-            inventory.dumpToChest()
-        end
-    end
-end
-
--- Move sideways one block to next row (used inside layer pattern)
-local function moveToNextRow(goingForward)
-    if goingForward then
-        turn(true)
-        ensureFuel()
-        safeForward()
-        turn(true)
-    else
-        turn(false)
-        ensureFuel()
-        safeForward()
-        turn(false)
-    end
-    if inventory.isFull() then
-        inventory.dumpToChest()
-    end
-end
-
--- Mine one horizontal layer (width x depth)
-local function mineLayer(width, depth, statusCallback, layerIndex, totalLayers)
-    local goingForward = true
-
-    for row = 1, depth do
-        -- traverse width cells for this row; dig down at each cell
-        for col = 1, width do
-            ensureFuel()
-            -- dig the block below (the layer we are clearing)
-            safeDigDown()
-
-            if inventory.isFull() then
-                inventory.dumpToChest()
+            if z < job.depth then
+                if dir then
+                    turtle.turnRight() forward() turtle.turnRight()
+                else
+                    turtle.turnLeft() forward() turtle.turnLeft()
+                end
+                dir = not dir
             end
-
-            -- move forward if not at the last column
-            if col < width then
-                safeForward()
-            end
+            if cb then cb(math.floor((y/job.height)*100)) end
         end
-
-        if statusCallback and totalLayers and layerIndex then
-            local total = totalLayers * depth
-            local done = (layerIndex - 1) * depth + row
-            local pct = math.floor((done / total) * 100)
-            statusCallback(pct)
-        end
-
-        if row ~= depth then
-            moveToNextRow(goingForward)
-            goingForward = not goingForward
-        end
-    end
-end
-
-function lane_miner.mineLane(job, statusCallback)
-    -- job: {jobId, xOffset, width, depth, height}
-
-    local width = job.width
-    local depth = job.depth
-    local height = job.height or 10
-
-    -- 1. Move horizontally to lane start: xOffset blocks along X
-    -- Assumes turtles are lined up along X, facing +Z.
-    for _ = 1, job.xOffset do
-        ensureFuel()
-        safeForward()
-        if inventory.isFull() then
-            inventory.dumpToChest()
-        end
-    end
-
-    -- 2. Mine down layer by layer
-    local layersMined = 0
-    local totalLayers = height
-
-    while layersMined < totalLayers do
-        mineLayer(width, depth, statusCallback, layersMined + 1, totalLayers)
-        layersMined = layersMined + 1
-
-        if layersMined < totalLayers then
-            ensureFuel()
-            safeDown()
-        end
-    end
-
-    if statusCallback then
-        statusCallback(100)
+        if y < job.height then down() end
     end
 end
 

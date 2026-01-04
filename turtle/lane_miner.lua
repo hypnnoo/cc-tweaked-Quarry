@@ -1,59 +1,57 @@
-local inventory = require("inventory")
-local lane_miner = {}
+local inv=require("inventory")
+local m={}
 
-local function fuel()
-    if turtle.getFuelLevel() == "unlimited" then return end
-    if turtle.getFuelLevel() < 200 then
-        for i=1,16 do
-            turtle.select(i)
-            if turtle.refuel(0) then turtle.refuel(64) end
+local function refuel()
+    if turtle.getFuelLevel()=="unlimited" then return end
+    if turtle.getFuelLevel()>500 then return end
+    for s=1,16 do
+        turtle.select(s)
+        local d=turtle.getItemDetail()
+        if d and d.name=="minecraft:lava_bucket" then
+            turtle.refuel(1)
+            return
         end
     end
 end
 
-local function digAll()
+local function dig()
     if turtle.detect() then turtle.dig() end
     if turtle.detectUp() then turtle.digUp() end
     if turtle.detectDown() then turtle.digDown() end
 end
 
-local function forward()
-    fuel()
-    digAll()
-    while not turtle.forward() do digAll() sleep(0.1) end
+local function fwd()
+    refuel() dig()
+    while not turtle.forward() do dig() sleep(0.1) end
 end
 
 local function down()
-    fuel()
-    digAll()
-    while not turtle.down() do digAll() sleep(0.1) end
+    refuel() dig()
+    while not turtle.down() do dig() sleep(0.1) end
 end
 
-function lane_miner.mineLane(job, cb)
-    -- MOVE +X TO LANE
+function m.mine(job,cb)
     turtle.turnRight()
-    for i=1,job.xOffset do forward() end
+    for i=1,job.xOffset do fwd() end
     turtle.turnLeft()
 
     for y=1,job.height do
-        local dir = true
+        local dir=true
         for z=1,job.depth do
             for x=1,job.width do
-                digAll()
-                if x < job.width then forward() end
+                if inv.isFull() then return "FULL" end
+                dig()
+                if x<job.width then fwd() end
             end
-            if z < job.depth then
-                if dir then
-                    turtle.turnRight() forward() turtle.turnRight()
-                else
-                    turtle.turnLeft() forward() turtle.turnLeft()
-                end
-                dir = not dir
+            if z<job.depth then
+                if dir then turtle.turnRight() fwd() turtle.turnRight()
+                else turtle.turnLeft() fwd() turtle.turnLeft() end
+                dir=not dir
             end
-            if cb then cb(math.floor((y/job.height)*100)) end
         end
-        if y < job.height then down() end
+        if cb then cb(math.floor((y/job.height)*100)) end
+        if y<job.height then down() end
     end
 end
 
-return lane_miner
+return m
